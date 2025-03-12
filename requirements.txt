@@ -1,0 +1,8 @@
+Flask==2.3.3
+spacy==3.7.2
+transformers==4.35.0
+torch==2.1.0
+en-core-web-trf @ https://github.com/explosion/spacy-models/releases/download/en_core_web_trf-3.7.1/en_core_web_trf-3.7.1-py3-none-any.whl
+python-dotenv==1.0.0
+gunicorn==21.2.0
+Flask-Session==0.5.0
