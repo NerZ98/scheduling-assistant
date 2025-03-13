@@ -3,7 +3,6 @@ import os
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Any
-
 import spacy
 from spacy.matcher import Matcher
 
@@ -475,7 +474,7 @@ class AdvancedEntityExtractor:
             self.logger.error(f"Error during entity extraction: {e}", exc_info=True)
             raise
         
-    def validate_attendees(self, attendees: List[str]) -> Tuple[List[str], List[str]]:
+    def validate_attendees(self, attendees: List[str]) -> tuple[List[str], List[str]]:
         """
         Validate attendees against the contacts database
         

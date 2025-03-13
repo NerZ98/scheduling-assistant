@@ -627,76 +627,87 @@ class Chatbot:
                 return special_response, {}
             
             # Process attendees before updating context
+
             if 'ATTENDEE' in entities and entities['ATTENDEE']:
-                not_found_attendees = []
+                self.logger.info(f"Processing attendees: {entities['ATTENDEE']}")
+                
+                # Validate attendees against contacts database
+                valid_attendees, invalid_attendees = self.validate_attendees(entities['ATTENDEE'])
+                
+                # If there are invalid attendees, respond with detailed error
+                if invalid_attendees:
+                    if len(invalid_attendees) == 1:
+                        # Show a list of similar names if possible
+                        similar_names = []
+                        all_contacts = self.contact_db.get_all_contacts()
+                        for contact in all_contacts[:10]:  # Limit to first 10 contacts
+                            similar_names.append(f"{contact['first_name']} {contact['last_name']}")
+                        
+                        suggestions = ", ".join(similar_names[:5])  # Show up to 5 suggestions
+                        return f"'{invalid_attendees[0]}' is not in the organization's contact list. Please choose from contacts like: {suggestions}", {}
+                    else:
+                        invalid_list = ", ".join([f"'{a}'" for a in invalid_attendees])
+                        return f"The following people are not in the organization's contact list: {invalid_list}. Please choose attendees from the organization.", {}
+                
+                # Process valid attendees
                 found_attendees = []
                 ambiguous_attendees = []
                 
-                self.logger.info(f"Processing attendees: {entities['ATTENDEE']}")
-                
-                for attendee in entities['ATTENDEE']:
+                for attendee in valid_attendees:
                     # Skip attendees that already have emails in their name
                     if '(' in attendee and '@' in attendee and ')' in attendee:
                         found_attendees.append(attendee)
                         continue
                     
                     # Search for contacts matching this name
-                    self.logger.info(f"Looking up contact for name: '{attendee}'")
                     contacts = self.contact_db.find_contacts_by_name(attendee)
                     
-                    self.logger.info(f"Found {len(contacts)} contacts for '{attendee}'")
-                    
-                    if len(contacts) > 0:
-                        if len(contacts) == 1:
-                            # Single match - add directly
-                            contact = contacts[0]
-                            email = contact['email']
-                            name = f"{contact['first_name']} {contact['last_name']}"
-                            specific_attendee = f"{name} ({email})"
+                    if len(contacts) == 1:
+                        # Single match - add directly
+                        contact = contacts[0]
+                        email = contact['email']
+                        name = f"{contact['first_name']} {contact['last_name']}"
+                        specific_attendee = f"{name} ({email})"
+                        
+                        found_attendees.append(attendee)
+                        
+                        # Add to context (create if needed)
+                        if 'ATTENDEE' not in self.contexts[session_id]:
+                            self.contexts[session_id]['ATTENDEE'] = []
+                        
+                        if specific_attendee not in self.contexts[session_id]['ATTENDEE']:
+                            self.contexts[session_id]['ATTENDEE'].append(specific_attendee)
+                            self.logger.info(f"Added single match attendee: {specific_attendee}")
                             
-                            found_attendees.append(attendee)
-                            
-                            # Add to context (create if needed)
-                            if 'ATTENDEE' not in self.contexts[session_id]:
-                                self.contexts[session_id]['ATTENDEE'] = []
-                            
-                            if specific_attendee not in self.contexts[session_id]['ATTENDEE']:
-                                self.contexts[session_id]['ATTENDEE'].append(specific_attendee)
-                                self.logger.info(f"Added single match attendee: {specific_attendee}")
-                                
-                            # Store the email
-                            self.handle_email_selection(session_id, specific_attendee, email)
-                        else:
-                            # Multiple matches - need user selection
-                            ambiguous_attendees.append((attendee, contacts))
-                            found_attendees.append(attendee)
-                    else:
-                        not_found_attendees.append(attendee)
-                
-                # If there are attendees not found in the database, respond with error
-                if not_found_attendees:
-                    attendee_list = ", ".join([f"'{a}'" for a in not_found_attendees])
-                    if len(not_found_attendees) == 1:
-                        return f"{attendee_list} is not in the organization's contact list. Please choose someone from the organization.", {}
-                    else:
-                        return f"The following people are not in the organization's contact list: {attendee_list}. Please choose attendees from the organization.", {}
+                        # Store the email
+                        self.handle_email_selection(session_id, specific_attendee, email)
+                    elif len(contacts) > 1:
+                        # Multiple matches - need user selection
+                        ambiguous_attendees.append((attendee, contacts))
+                        found_attendees.append(attendee)
                 
                 # Store the original entities before handling ambiguous attendees
                 # This is to preserve date, time, and duration information
+                original_entities = {}
                 for entity_type, values in entities.items():
                     if entity_type != 'ATTENDEE' and values:  # Don't overwrite attendees
-                        if entity_type not in self.contexts[session_id] or not self.contexts[session_id][entity_type]:
-                            self.contexts[session_id][entity_type] = values.copy()
+                        original_entities[entity_type] = values.copy()
                 
                 # If there are ambiguous attendees, handle the first one
                 if ambiguous_attendees:
                     attendee, records = ambiguous_attendees[0]
                     options_text = self.format_contact_options(records)
                     
+                    # Store original entities in the context
+                    for entity_type, values in original_entities.items():
+                        if entity_type not in self.contexts[session_id] or not self.contexts[session_id][entity_type]:
+                            self.contexts[session_id][entity_type] = values
+                    
                     # Set pending email selection in context
                     self.contexts[session_id]['PENDING_EMAIL_SELECTION'] = {
                         'attendee': attendee,
-                        'options': records
+                        'options': records,
+                        'original_entities': original_entities  # Store original entities
                     }
                     
                     return f"Multiple contacts found for '{attendee}'. Please select one or more by number (e.g., '1', '2', '1 and 2', or 'all'):\n{options_text}", entities
