@@ -285,6 +285,7 @@ def connect_microsoft():
     
     # Log the state for debugging
     app.logger.info(f"Generated state parameter: {state}")
+    print("generated stateeeeee",state)
     app.logger.info(f"Session contents: {session}")
     
     try:
