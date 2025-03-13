@@ -719,3 +719,85 @@ class Chatbot:
             import traceback
             self.logger.error(traceback.format_exc())
             return random.choice(self.prompts['UNKNOWN']), {}
+        
+    def generate_summary_with_teams_link(self, session_id: str, teams_link: str = None) -> str:
+        """
+        Generate a summary of the scheduling information including emails and Teams link
+        
+        Args:
+            session_id (str): The session identifier
+            teams_link (str, optional): Microsoft Teams meeting link
+            
+        Returns:
+            str: Summary message with emails and Teams link
+        """
+        # First, get the regular summary
+        summary = self.generate_summary_with_emails(session_id)
+        
+        # If a Teams link is provided, append it to the summary
+        if teams_link:
+            summary += f"\n\nYou can join the meeting using this Microsoft Teams link: {teams_link}"
+        
+        return summary
+
+    def update_context_with_teams_link(self, session_id: str, teams_link: str) -> None:
+        """
+        Update the context with a Microsoft Teams meeting link
+        
+        Args:
+            session_id (str): The session identifier
+            teams_link (str): Microsoft Teams meeting link
+        """
+        if session_id not in self.contexts:
+            return
+        
+        # Add Teams link to context
+        self.contexts[session_id]['TEAMS_LINK'] = teams_link
+        
+        # Update summary if it exists
+        if self.contexts[session_id].get('SUMMARY'):
+            self.contexts[session_id]['SUMMARY'] = self.generate_summary_with_teams_link(
+                session_id, teams_link
+            )
+        
+        self.logger.info(f"Updated context with Teams link for session {session_id}")
+
+    def prepare_meeting_data(self, session_id: str) -> dict:
+        """
+        Prepare meeting data for Microsoft Graph API
+        
+        Args:
+            session_id (str): The session identifier
+            
+        Returns:
+            dict: Meeting data formatted for Microsoft Graph API
+        """
+        if session_id not in self.contexts:
+            return {}
+        
+        context = self.contexts[session_id]
+        
+        # Get basic meeting details
+        date = context.get('DATE', [''])[0]
+        time = context.get('TIME', [''])[0]
+        duration = context.get('DURATION', [''])[0]
+        attendees = context.get('ATTENDEE', [])
+        
+        # Extract email addresses from attendees
+        email_addresses = []
+        for attendee in attendees:
+            # Try to extract email from format "Name (email@example.com)"
+            import re
+            email_match = re.search(r'\(([^)]+@[^)]+)\)', attendee)
+            
+            if email_match:
+                email_addresses.append(email_match.group(1))
+        
+        # Create meeting data
+        meeting_data = {
+            'subject': f"Meeting on {date} at {time}",
+            'body': f"Meeting scheduled via Scheduling Assistant\n\nDate: {date}\nTime: {time}\nDuration: {duration}\nAttendees: {', '.join(attendees)}",
+            'attendees': email_addresses
+        }
+        
+        return meeting_data
