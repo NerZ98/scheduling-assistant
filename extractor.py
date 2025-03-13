@@ -368,87 +368,101 @@ class AdvancedEntityExtractor:
             
             # Attendee extraction - with preprocessing to remove command words
             self.logger.debug("Beginning attendee extraction")
-            
-            # List of command words to ignore in attendee extraction
-            command_words = ['add', 'schedule', 'plan', 'create', 'set', 'arrange', 'invite', 'with', 'meeting','Add']
-            
+
             # Preprocess text for attendee extraction
             attendee_text = text
+
+            # List of command words to ignore in attendee extraction
+            command_words = ['add', 'schedule', 'plan', 'create', 'set', 'arrange', 'invite', 'with', 'meeting', 'Add']
+
+            # Replace command words with spaces
             for word in command_words:
-                # Replace word at beginning of text or when it's alone (surrounded by spaces)
-                # Use word boundaries to avoid removing parts of names
                 pattern = r'(?i)\b' + word + r'\b'
                 attendee_text = re.sub(pattern, ' ', attendee_text)
-            
+
             # Clean up multiple spaces
             attendee_text = re.sub(r'\s+', ' ', attendee_text).strip()
-            
+
             self.logger.debug(f"Preprocessed text for attendee extraction: '{attendee_text}'")
-            
-            # Process with SpaCy for attendees
-            doc_for_attendees = self.nlp(attendee_text)
-            
-            # First, try SpaCy NER for person names
-            attendees = [ent.text for ent in doc_for_attendees.ents if ent.label_ == 'PERSON']
-            self.logger.debug(f"SpaCy identified attendees: {attendees}")
-            
-            # If SpaCy doesn't find any attendees, try using the original text without preprocessing
+
+            # Specifically parse comma-separated names or "and" separated names
+            attendees = []
+
+            # First, try to split by common separators (comma, and, &)
+            if ',' in attendee_text or ' and ' in attendee_text or '&' in attendee_text:
+                # Replace 'and' and '&' with commas for consistent parsing
+                normalized_text = attendee_text.replace(' and ', ',').replace('&', ',')
+                
+                # Split by comma and clean each part
+                name_parts = [part.strip() for part in normalized_text.split(',') if part.strip()]
+                
+                # Filter out empty parts and add to attendees
+                for name in name_parts:
+                    if name and len(name) > 1:  # Ensure name has some content
+                        attendees.append(name)
+                
+                self.logger.debug(f"Extracted attendees from separators: {attendees}")
+
+            # If separator parsing didn't work or as a fallback, try SpaCy NER
+            if not attendees:
+                # Process with SpaCy for attendees
+                doc_for_attendees = self.nlp(attendee_text)
+                
+                # Try SpaCy NER for person names
+                spacy_attendees = [ent.text for ent in doc_for_attendees.ents if ent.label_ == 'PERSON']
+                self.logger.debug(f"SpaCy identified attendees: {spacy_attendees}")
+                
+                # Add to our attendees list
+                attendees.extend(spacy_attendees)
+
+            # If still no attendees found, try original text without preprocessing
             if not attendees:
                 doc_original = self.nlp(text)
-                attendees = [ent.text for ent in doc_original.ents if ent.label_ == 'PERSON']
-                self.logger.debug(f"SpaCy identified attendees from original text: {attendees}")
-            
-            query_words = ['how', 'what', 'when', 'where', 'why', 'who', 'which', 'schedule', 'help', 'can']
-            # Filter out any names that are actually query words
-            attendees = [name for name in attendees if name.lower() not in [q.lower() for q in query_words]]
-            
-            # Fallback to custom name extraction with strong heuristics
+                spacy_attendees = [ent.text for ent in doc_original.ents if ent.label_ == 'PERSON']
+                self.logger.debug(f"SpaCy identified attendees from original text: {spacy_attendees}")
+                attendees.extend(spacy_attendees)
+
+            # If still no attendees, try custom name extraction with stronger heuristics
             if not attendees and attendee_text.strip():
                 self.logger.debug("No attendees found with SpaCy, trying custom pattern")
                 
                 # Look for capitalized words that might be names
-                # This pattern catches both single names and multi-word names
                 name_pattern = r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\b'
-                possible_names = re.findall(name_pattern, attendee_text)
+                possible_names = re.findall(name_pattern, attendee_text, re.IGNORECASE)
                 
                 if not possible_names:
                     # If no capitalized names found, try the original text
-                    possible_names = re.findall(name_pattern, text)
+                    possible_names = re.findall(name_pattern, text, re.IGNORECASE)
                     self.logger.debug(f"Looking for names in original text: {possible_names}")
                 
-                # As a last resort, check for any words that might be names (lowercase included)
-                if not possible_names and len(attendee_text.split()) == 1:
-                    # IMPORTANT FIX: Don't treat the word as a name if it matches time or duration patterns
-                    word = attendee_text.strip()
-                    
-                    time_match = any(re.match(pattern, word, re.IGNORECASE) for pattern in time_patterns)
-                    duration_match = any(re.match(pattern, word, re.IGNORECASE) for pattern in duration_patterns)
-                    
-                    if not time_match and not duration_match and len(word) > 1:
-                        self.logger.debug(f"Single word input '{word}', treating as potential name")
-                        possible_names = [word]
-                    else:
-                        self.logger.debug(f"Single word input '{word}' matches time or duration pattern, not treating as name")
-                        possible_names = []
+                # As a last resort, check for any words that might be names
+                if not possible_names:
+                    # Split by space and consider individual words
+                    words = [w.strip() for w in attendee_text.split() if len(w.strip()) > 1]
+                    self.logger.debug(f"Considering individual words as potential names: {words}")
+                    possible_names = words
                 
-                # Filter out common words that might be capitalized
-                common_words = ['i', 'me', 'my', 'mine', 'you', 'your', 'he', 'she', 'his', 'her', 
-                                'schedule', 'meeting', 'appointment', 'tomorrow', 'today', 
-                                'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
-                                'january', 'february', 'march', 'april', 'may', 'june', 'july', 
-                                'august', 'september', 'october', 'november', 'december',
-                                'how', 'what', 'when', 'where', 'why', 'who', 'which']
-                
-                # Also filter out command words from common_words
-                common_words.extend(command_words)
-                
-                attendees = [name for name in possible_names 
-                            if name.lower() not in [word.lower() for word in common_words]]
-                
-                self.logger.debug(f"Custom pattern identified attendees (after filtering): {attendees}")
-            
+                # Add possible names to attendees
+                attendees.extend(possible_names)
+
+            # Filter out query words and common words
+            query_words = ['how', 'what', 'when', 'where', 'why', 'who', 'which', 'schedule', 'help', 'can']
+            common_words = ['i', 'me', 'my', 'mine', 'you', 'your', 'he', 'she', 'his', 'her', 
+                            'schedule', 'meeting', 'appointment', 'tomorrow', 'today', 
+                            'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+                            'january', 'february', 'march', 'april', 'may', 'june', 'july', 
+                            'august', 'september', 'october', 'november', 'december']
+
+            attendees = [name for name in attendees 
+                        if name.lower() not in [q.lower() for q in query_words + common_words + command_words]]
+
             # Remove duplicates while preserving order
-            entities['ATTENDEE'] = list(dict.fromkeys(attendees))
+            unique_attendees = []
+            for attendee in attendees:
+                if attendee not in unique_attendees:
+                    unique_attendees.append(attendee)
+
+            entities['ATTENDEE'] = unique_attendees
             self.logger.info(f"Final extracted attendees: {entities['ATTENDEE']}")
             
             # Log the complete extraction results
@@ -460,3 +474,58 @@ class AdvancedEntityExtractor:
         except Exception as e:
             self.logger.error(f"Error during entity extraction: {e}", exc_info=True)
             raise
+        
+    def validate_attendees(self, attendees: List[str]) -> Tuple[List[str], List[str]]:
+        """
+        Validate attendees against the contacts database
+        
+        Args:
+            attendees (List[str]): List of attendee names to validate
+            
+        Returns:
+            Tuple[List[str], List[str]]: Valid attendees and invalid attendees
+        """
+        valid_attendees = []
+        invalid_attendees = []
+        
+        for attendee in attendees:
+            # Skip attendees that already have emails in their name
+            if '(' in attendee and '@' in attendee and ')' in attendee:
+                valid_attendees.append(attendee)
+                continue
+            
+            # Search for contacts matching this name
+            contacts = self.contact_db.find_contacts_by_name(attendee)
+            
+            if contacts:
+                valid_attendees.append(attendee)
+            else:
+                # Try fuzzy matching - check if any contact name is similar to this attendee
+                all_contacts = self.contact_db.get_all_contacts()
+                found_match = False
+                
+                for contact in all_contacts:
+                    full_name = f"{contact['first_name']} {contact['last_name']}".lower()
+                    attendee_lower = attendee.lower()
+                    
+                    # Check if name parts are similar
+                    if (attendee_lower in full_name or
+                        attendee_lower in contact['first_name'].lower() or
+                        attendee_lower in contact['last_name'].lower() or
+                        # Check if first few letters match
+                        (len(attendee_lower) >= 3 and (
+                            contact['first_name'].lower().startswith(attendee_lower[:3]) or
+                            contact['last_name'].lower().startswith(attendee_lower[:3])
+                        ))):
+                        
+                        # Add the correct name instead of the misspelled one
+                        correct_name = f"{contact['first_name']} {contact['last_name']}"
+                        valid_attendees.append(correct_name)
+                        found_match = True
+                        self.logger.info(f"Found fuzzy match for '{attendee}': '{correct_name}'")
+                        break
+                
+                if not found_match:
+                    invalid_attendees.append(attendee)
+        
+        return valid_attendees, invalid_attendees

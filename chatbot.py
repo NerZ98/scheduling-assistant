@@ -527,6 +527,14 @@ class Chatbot:
                 
             # Check if this is an email selection message
             if session_id in self.contexts and 'PENDING_EMAIL_SELECTION' in self.contexts[session_id]:
+                # Store the original entities before processing the selection
+                original_entities = {}
+                
+                # Create a copy of all existing entities to preserve them
+                for entity_type in self.required_entities:
+                    if entity_type in self.contexts[session_id] and self.contexts[session_id][entity_type]:
+                        original_entities[entity_type] = self.contexts[session_id][entity_type].copy()
+                
                 attendee = self.contexts[session_id]['PENDING_EMAIL_SELECTION']['attendee']
                 options = self.contexts[session_id]['PENDING_EMAIL_SELECTION']['options']
                 
@@ -563,6 +571,12 @@ class Chatbot:
                     
                     # Clear the pending selection
                     del self.contexts[session_id]['PENDING_EMAIL_SELECTION']
+                    
+                    # Restore original entities that might have been lost during selection
+                    for entity_type, values in original_entities.items():
+                        if entity_type != 'ATTENDEE':  # Don't overwrite attendees
+                            if entity_type not in self.contexts[session_id] or not self.contexts[session_id][entity_type]:
+                                self.contexts[session_id][entity_type] = values
                     
                     # Format selections for response
                     selection_text = ""
@@ -602,15 +616,15 @@ class Chatbot:
                 options_text = self.format_contact_options(options)
                 return f"Invalid selection. Please select one or more numbers from the list (e.g., '1', '2', '1 and 2', or 'all'):\n{options_text}", {}
             
-            # Check for special intents first (greetings, help)
+            # Extract entities from the message first
+            entities = self.extractor.extract_entities(message)
+            self.logger.info(f"Extracted entities: {entities}")
+            
+            # Check for special intents (greetings, help)
             special_response = self.check_special_intents(message)
             if special_response:
                 # Return the special response with empty entities
                 return special_response, {}
-            
-            # Extract entities from the message
-            entities = self.extractor.extract_entities(message)
-            self.logger.info(f"Extracted entities: {entities}")
             
             # Process attendees before updating context
             if 'ATTENDEE' in entities and entities['ATTENDEE']:
@@ -667,6 +681,13 @@ class Chatbot:
                     else:
                         return f"The following people are not in the organization's contact list: {attendee_list}. Please choose attendees from the organization.", {}
                 
+                # Store the original entities before handling ambiguous attendees
+                # This is to preserve date, time, and duration information
+                for entity_type, values in entities.items():
+                    if entity_type != 'ATTENDEE' and values:  # Don't overwrite attendees
+                        if entity_type not in self.contexts[session_id] or not self.contexts[session_id][entity_type]:
+                            self.contexts[session_id][entity_type] = values.copy()
+                
                 # If there are ambiguous attendees, handle the first one
                 if ambiguous_attendees:
                     attendee, records = ambiguous_attendees[0]
@@ -719,7 +740,7 @@ class Chatbot:
             import traceback
             self.logger.error(traceback.format_exc())
             return random.choice(self.prompts['UNKNOWN']), {}
-        
+                
     def generate_summary_with_teams_link(self, session_id: str, teams_link: str = None) -> str:
         """
         Generate a summary of the scheduling information including emails and Teams link
