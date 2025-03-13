@@ -133,7 +133,7 @@ def message():
             try:
                 created_meeting = graph_client.create_meeting(user_id, meeting_data)
                 
-                # Check if meeting was created successfully and is a dictionary
+                # Check if meeting was created successfully
                 if created_meeting and isinstance(created_meeting, dict) and created_meeting.get('id'):
                     # Save meeting information in database
                     meeting_db.save_meeting(session_id, session_id, created_meeting)
