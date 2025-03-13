@@ -130,26 +130,31 @@ def message():
             meeting_data = prepare_meeting_data_from_context(context)
             
             # Create meeting in Microsoft Graph
-            created_meeting = graph_client.create_meeting(user_id, meeting_data)
-            
-            if created_meeting and not isinstance(created_meeting, dict) or created_meeting.get('id'):
-                # Save meeting information in database
-                meeting_db.save_meeting(session_id, session_id, created_meeting)
+            try:
+                created_meeting = graph_client.create_meeting(user_id, meeting_data)
                 
-                # Get Teams meeting link
-                teams_link = created_meeting.get('onlineMeeting', {}).get('joinUrl')
+                # Check if meeting was created successfully and is a dictionary
+                if created_meeting and isinstance(created_meeting, dict) and created_meeting.get('id'):
+                    # Save meeting information in database
+                    meeting_db.save_meeting(session_id, session_id, created_meeting)
+                    
+                    # Since we're not creating Teams meetings, don't try to get the Teams link
+                    # Just append a success message about the calendar appointment
+                    bot_response += "\n\nI've added the meeting to your calendar."
+                else:
+                    # Handle meeting creation failure
+                    error_msg = created_meeting.get('error', 'Unknown error') if isinstance(created_meeting, dict) else 'Failed to create meeting'
+                    app.logger.error(f"Failed to create meeting: {error_msg}")
+                    
+                    # If it's an authentication issue, suggest reconnecting
+                    if isinstance(created_meeting, dict) and ("token" in str(error_msg).lower() or "auth" in str(error_msg).lower()):
+                        bot_response += "\n\nI couldn't create the calendar appointment. Please click 'Connect to Microsoft' to reauthorize calendar access."
+                    else:
+                        bot_response += "\n\nI couldn't create the calendar appointment due to a technical issue. Please try again later."
+            except Exception as e:
+                app.logger.error(f"Exception creating meeting: {e}", exc_info=True)
+                bot_response += "\n\nI couldn't create the Microsoft Teams meeting due to a technical error. Please try again later."
                 
-                if teams_link:
-                    # Append Teams meeting link to bot response
-                    bot_response += f"\n\nI've created a Microsoft Teams meeting for you: {teams_link}"
-            else:
-                # Handle meeting creation failure
-                error_msg = created_meeting.get('error', 'Unknown error')
-                app.logger.error(f"Failed to create meeting: {error_msg}")
-                
-                # If it's an authentication issue, suggest reconnecting
-                if "token" in str(error_msg).lower() or "auth" in str(error_msg).lower():
-                    bot_response += "\n\nI couldn't create the Microsoft Teams meeting. Please click 'Connect to Microsoft' to reauthorize calendar access."
         elif not user_id and is_complete:
             # User not authenticated, add login message
             bot_response += "\n\nTo create this meeting in your Microsoft calendar, please click 'Connect to Microsoft' to authorize access."
@@ -160,7 +165,7 @@ def message():
         'entities': entities,
         'complete': is_complete
     })
-
+    
 @app.route('/reset', methods=['POST'])
 def reset():
     """Reset the chat session"""
@@ -273,20 +278,13 @@ def connect_microsoft():
     """Generate Microsoft auth URL and redirect user"""
     if 'session_id' not in session:
         session['session_id'] = str(uuid.uuid4())
-    
-    # Generate a state parameter for CSRF protection and auth URL
-    auth_url, state, code_verifier = graph_client.get_auth_url()
-    
-    # Store state in the session for verification (critical for security)
-    session['ms_auth_state'] = state
-    
-    # Force session to be saved
-    session.modified = True
-    
-    # Log the state for debugging
-    app.logger.info(f"Generated state parameter: {state}")
-    app.logger.info(f"Session contents: {session}")
-    
+
+    # Generate Microsoft auth URL (ignoring state)
+    auth_url, _, _ = graph_client.get_auth_url()
+
+    # Log the auth URL for debugging
+    app.logger.info("Redirecting to Microsoft authentication.")
+
     try:
         # Redirect to Microsoft login
         return redirect(auth_url)
@@ -294,69 +292,57 @@ def connect_microsoft():
         app.logger.error(f"Error generating auth URL: {e}", exc_info=True)
         return render_template('error.html', message="An error occurred during authentication setup. Please try again.")
 
+
 @app.route('/auth/callback')
 def auth_callback():
     """Handle Microsoft auth callback"""
-    # Verify state parameter
-    state = request.args.get('state')
-    expected_state = session.get('ms_auth_state')
-    
-    app.logger.info(f"Received state: {state}")
-    app.logger.info(f"Expected state from session: {expected_state}")
-    app.logger.info(f"Session contents: {session}")
-    
-    if state != expected_state or not expected_state:
-        app.logger.error(f"State mismatch: received {state}, expected {expected_state}")
-        return render_template('error.html', message="Invalid state parameter. Authentication failed. Check that cookies are enabled in your browser.")
-    
+
     # Check for error in the callback
     error = request.args.get('error')
     error_description = request.args.get('error_description')
     if error:
         app.logger.error(f"OAuth error: {error} - {error_description}")
         return render_template('error.html', message=f"Authentication error: {error_description}")
-    
+
     # Get authorization code
     code = request.args.get('code')
     if not code:
         app.logger.error("No authorization code received")
         return render_template('error.html', message="No authorization code received. Authentication failed.")
-    
+
     try:
         # Exchange code for tokens
         token_info = graph_client.get_token_from_code(code)
-        
+
         if not token_info.get('success'):
             app.logger.error(f"Failed to get access token: {token_info.get('error')}")
             return render_template('error.html', 
                 message=f"Failed to get access token: {token_info.get('error_description', 'Unknown error')}")
-        
+
         # Store user ID in session
         user_id = token_info.get('user_id')
         if not user_id:
             app.logger.error("No user ID returned from token exchange")
             return render_template('error.html', message="Failed to get user information. Authentication failed.")
-        
+
         # Save session information
         session_id = session.get('session_id')
         meeting_db.save_session(session_id, {"id": user_id}, {"access_token": "stored_in_graph_client"})
-        
+
         # Store user_id in session for easy access
         session['user_id'] = user_id
-        
-        # Clear state parameter
-        session.pop('ms_auth_state', None)
-        
+
         # Force session to be saved
         session.modified = True
-        
+
         app.logger.info(f"Authentication successful for user_id: {user_id}")
-        
+
         # Redirect to home page
         return redirect(url_for('index'))
     except Exception as e:
         app.logger.error(f"Exception during authentication: {e}", exc_info=True)
         return render_template('error.html', message="An unexpected error occurred during authentication. Please try again.")
+
 
 @app.route('/auth/disconnect')
 def disconnect_microsoft():

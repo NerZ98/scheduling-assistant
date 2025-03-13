@@ -251,25 +251,7 @@ class AdvancedEntityExtractor:
             doc = self.nlp(text)
             self.logger.debug(f"SpaCy entities found: {[(ent.text, ent.label_) for ent in doc.ents]}")
             
-            # Date extraction
-            self.logger.debug("Beginning date extraction")
-            date_patterns = [
-                r'\b(?:today|tomorrow|yesterday)\b',
-                r'\bnext\s+(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b',
-                # Add new patterns for dates like "21st March"
-                r'\b(?:\d{1,2})(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\b',
-                r'\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+(?:\d{1,2})(?:st|nd|rd|th)?\b',
-                r'\b(?:\d{1,2})(?:st|nd|rd|th)?\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b',
-                r'\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(?:\d{1,2})(?:st|nd|rd|th)?\b'
-            ]
-            date_regex = re.compile('|'.join(date_patterns), re.IGNORECASE)
-            date_matches = date_regex.findall(text)
-            self.logger.debug(f"Raw date matches: {date_matches}")
-            
-            entities['DATE'] = [self.parse_date(date) for date in date_matches]
-            self.logger.info(f"Extracted dates: {entities['DATE']}")
-            
-            # Time extraction
+            # Time extraction - Do this FIRST to prevent time-only inputs being treated as names
             self.logger.debug("Beginning time extraction")
             time_patterns = [
                 r'\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b',
@@ -281,7 +263,7 @@ class AdvancedEntityExtractor:
             entities['TIME'] = time_regex.findall(text)
             self.logger.info(f"Extracted times: {entities['TIME']}")
             
-            # Duration extraction with multiple patterns
+            # Duration extraction - Do this SECOND to prevent duration-only inputs being treated as names
             self.logger.debug("Beginning duration extraction")
             duration_patterns = [
                 # Patterns with units after number
@@ -353,6 +335,37 @@ class AdvancedEntityExtractor:
             entities['DURATION'] = processed_durations
             self.logger.info(f"Extracted durations: {entities['DURATION']}")
             
+            # Date extraction
+            self.logger.debug("Beginning date extraction")
+            date_patterns = [
+                r'\b(?:today|tomorrow|yesterday)\b',
+                r'\bnext\s+(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b',
+                # Add new patterns for dates like "21st March"
+                r'\b(?:\d{1,2})(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\b',
+                r'\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+(?:\d{1,2})(?:st|nd|rd|th)?\b',
+                r'\b(?:\d{1,2})(?:st|nd|rd|th)?\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b',
+                r'\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(?:\d{1,2})(?:st|nd|rd|th)?\b'
+            ]
+            date_regex = re.compile('|'.join(date_patterns), re.IGNORECASE)
+            date_matches = date_regex.findall(text)
+            self.logger.debug(f"Raw date matches: {date_matches}")
+            
+            entities['DATE'] = [self.parse_date(date) for date in date_matches]
+            self.logger.info(f"Extracted dates: {entities['DATE']}")
+            
+            # Check if we already identified time, duration, or date entities
+            # If the entire input was captured as one of these entity types, skip attendee extraction
+            if len(text.strip()) > 0:
+                input_words = text.strip().split()
+                
+                # Check if the entire input is captured in TIME or DURATION
+                if ((len(input_words) == 1 and (entities['TIME'] or entities['DURATION'])) or
+                    (len(input_words) <= 2 and (entities['TIME'] or entities['DURATION'] or entities['DATE']))):
+                    self.logger.debug("Input appears to be only time, duration, or date - skipping attendee extraction")
+                    # The entire input was captured as time, duration, or date entity
+                    # Skip attendee extraction for this input
+                    return entities
+            
             # Attendee extraction - with preprocessing to remove command words
             self.logger.debug("Beginning attendee extraction")
             
@@ -405,10 +418,18 @@ class AdvancedEntityExtractor:
                 
                 # As a last resort, check for any words that might be names (lowercase included)
                 if not possible_names and len(attendee_text.split()) == 1:
-                    self.logger.debug("Single word input, treating as potential name regardless of case")
-                    possible_name = attendee_text.strip()
-                    if possible_name and len(possible_name) > 1:  # At least 2 chars
-                        possible_names = [possible_name]
+                    # IMPORTANT FIX: Don't treat the word as a name if it matches time or duration patterns
+                    word = attendee_text.strip()
+                    
+                    time_match = any(re.match(pattern, word, re.IGNORECASE) for pattern in time_patterns)
+                    duration_match = any(re.match(pattern, word, re.IGNORECASE) for pattern in duration_patterns)
+                    
+                    if not time_match and not duration_match and len(word) > 1:
+                        self.logger.debug(f"Single word input '{word}', treating as potential name")
+                        possible_names = [word]
+                    else:
+                        self.logger.debug(f"Single word input '{word}' matches time or duration pattern, not treating as name")
+                        possible_names = []
                 
                 # Filter out common words that might be capitalized
                 common_words = ['i', 'me', 'my', 'mine', 'you', 'your', 'he', 'she', 'his', 'her', 

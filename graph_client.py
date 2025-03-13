@@ -226,16 +226,16 @@ class GraphClient:
     
     def create_meeting(self, user_id: str, meeting_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Create a meeting/event in user's calendar with online meeting link
+        Create a meeting/event in user's calendar
         
         Args:
             user_id: User ID for token lookup
             meeting_data: Meeting information including subject, attendees, start/end times
             
         Returns:
-            Dict: Created meeting information
+            Dict: Created meeting information or error details
         """
-        self.logger.info(f"Creating meeting: {meeting_data.get('subject', 'Untitled')}")
+        print(f"Creating meeting: {meeting_data.get('subject', 'Untitled')}")
         
         try:
             # Get token for user
@@ -254,6 +254,9 @@ class GraphClient:
             # Prepare attendees list
             attendees = []
             for email in meeting_data.get('attendees', []):
+                if not email or '@' not in email:
+                    continue  # Skip invalid emails
+                    
                 attendees.append({
                     "emailAddress": {
                         "address": email
@@ -261,12 +264,61 @@ class GraphClient:
                     "type": "required"
                 })
             
-            # Format start/end times
-            start_time = f"{meeting_data['date']}T{meeting_data['time']}"
-            start_datetime = datetime.fromisoformat(start_time)
-            duration_minutes = meeting_data.get('duration_minutes', 30)
-            end_datetime = start_datetime + timedelta(minutes=duration_minutes)
-            end_time = end_datetime.isoformat()
+            try:
+                # Format start/end times
+                start_time = None
+                end_time = None
+                
+                # Check if we have a valid time format
+                if 'time' in meeting_data and meeting_data['time']:
+                    try:
+                        # Try different time formats
+                        if ':' in meeting_data['time']:
+                            time_formats = ["%I:%M", "%H:%M", "%I:%M%p", "%H:%M%p"]
+                        else:
+                            time_formats = ["%I%p", "%H"]
+                            
+                        time_str = meeting_data['time'].upper().replace(" ", "")
+                        formatted_time = None
+                        
+                        for fmt in time_formats:
+                            try:
+                                parsed_time = datetime.strptime(time_str, fmt)
+                                formatted_time = parsed_time.strftime("%H:%M")
+                                break
+                            except ValueError:
+                                continue
+                                
+                        if formatted_time:
+                            start_time = f"{meeting_data['date']}T{formatted_time}"
+                            start_datetime = datetime.fromisoformat(start_time)
+                            duration_minutes = meeting_data.get('duration_minutes', 30)
+                            end_datetime = start_datetime + timedelta(minutes=duration_minutes)
+                            end_time = end_datetime.isoformat()
+                    except Exception as e:
+                        print(f"Error parsing time: {e}")
+                        # Use default times if parsing fails
+                        start_time = None
+                
+                # If time parsing failed, use current time + 1 day
+                if not start_time or not end_time:
+                    now = datetime.now()
+                    tomorrow = now + timedelta(days=1)
+                    start_datetime = datetime(tomorrow.year, tomorrow.month, tomorrow.day, 9, 0)  # 9:00 AM
+                    start_time = start_datetime.isoformat()
+                    duration_minutes = meeting_data.get('duration_minutes', 30)
+                    end_datetime = start_datetime + timedelta(minutes=duration_minutes)
+                    end_time = end_datetime.isoformat()
+            except Exception as e:
+                print(f"Error setting up meeting times: {e}")
+                # Use default times if any error occurs
+                now = datetime.now()
+                tomorrow = now + timedelta(days=1)
+                start_datetime = datetime(tomorrow.year, tomorrow.month, tomorrow.day, 9, 0)  # 9:00 AM
+                start_time = start_datetime.isoformat()
+                duration_minutes = 30
+                end_datetime = start_datetime + timedelta(minutes=duration_minutes)
+                end_time = end_datetime.isoformat()
             
             # Format request body
             body = {
@@ -277,46 +329,73 @@ class GraphClient:
                 },
                 "start": {
                     "dateTime": start_time,
-                    "timeZone": "UTC"
+                    "timeZone": "India Standard Time"
                 },
                 "end": {
                     "dateTime": end_time,
-                    "timeZone": "UTC"
+                    "timeZone": "India Standard Time"
                 },
                 "location": {
                     "displayName": meeting_data.get('location', 'Online')
                 },
                 "attendees": attendees,
-                "isOnlineMeeting": True,
-                "onlineMeetingProvider": "teamsForBusiness"
+                "isOnlineMeeting": False
             }
             
-            self.logger.debug(f"Meeting request payload: {json.dumps(body, default=str)}")
+            # Print the API request details
+            import json
+            print("\n------ MICROSOFT GRAPH API REQUEST ------")
+            print(f"Endpoint: https://graph.microsoft.com/v1.0/me/events")
+            print(f"Method: POST")
+            print(f"Headers: Authorization: Bearer [TOKEN HIDDEN]")
+            print(f"Request Body: {json.dumps(body, indent=2, default=str)}")
+            print("----------------------------------------\n")
             
-            response = requests.post(
-                f"{self.base_url}/me/events",
-                headers=headers,
-                data=json.dumps(body)
-            )
-            
-            if response.status_code in [200, 201]:
-                created_meeting = response.json()
-                self.logger.info(f"Meeting created successfully: {created_meeting.get('id', 'Unknown ID')}")
-                return created_meeting
-            else:
-                self.logger.error(f"Error creating meeting: {response.status_code} - {response.text}")
+            try:
+                response = requests.post(
+                    f"{self.base_url}/me/events",
+                    headers=headers,
+                    data=json.dumps(body),
+                    timeout=10  # Add timeout to prevent hanging requests
+                )
+                
+                # Print the API response details
+                print("\n------ MICROSOFT GRAPH API RESPONSE ------")
+                print(f"Status Code: {response.status_code}")
+                if response.text:
+                    try:
+                        print(f"Response: {json.dumps(response.json(), indent=2)}")
+                    except:
+                        print(f"Response (text): {response.text[:500]}")
+                print("----------------------------------------\n")
+                
+                if response.status_code in [200, 201]:
+                    created_meeting = response.json()
+                    print(f"Meeting created successfully: {created_meeting.get('id', 'Unknown ID')}")
+                    return created_meeting
+                else:
+                    print(f"Error creating meeting: {response.status_code} - {response.text}")
+                    return {
+                        "success": False,
+                        "error": f"API error {response.status_code}",
+                        "details": response.text
+                    }
+            except requests.exceptions.RequestException as req_err:
+                print(f"Request exception creating meeting: {req_err}")
                 return {
                     "success": False,
-                    "error": f"API error {response.status_code}: {response.text}"
+                    "error": f"Request failed: {str(req_err)}"
                 }
         
         except Exception as e:
-            self.logger.error(f"Exception creating meeting: {e}", exc_info=True)
+            print(f"Exception creating meeting: {e}")
+            import traceback
+            print(traceback.format_exc())
             return {
                 "success": False,
                 "error": str(e)
             }
-    
+                    
     def update_meeting(self, user_id: str, meeting_id: str, meeting_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Update an existing meeting/event

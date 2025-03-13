@@ -228,11 +228,50 @@ class MeetingDatabase:
             int: Meeting ID or 0 if failed
         """
         try:
+            # Validate meeting_data
+            if not meeting_data or not isinstance(meeting_data, dict) or 'id' not in meeting_data:
+                self.logger.error(f"Invalid meeting data: {meeting_data}")
+                return 0
+                
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
             # Convert attendees list to JSON string
-            attendees_json = json.dumps(meeting_data.get('attendees', []))
+            attendees = meeting_data.get('attendees', [])
+            attendees_json = json.dumps(attendees) if isinstance(attendees, list) else '[]'
+            
+            # Safely get nested attributes with fallbacks
+            ms_meeting_id = meeting_data.get('id', '')
+            subject = meeting_data.get('subject', 'Meeting')
+            
+            # Safely get body content
+            body_content = ''
+            body = meeting_data.get('body', {})
+            if isinstance(body, dict):
+                body_content = body.get('content', '')
+                
+            # Safely get datetime values
+            start_time = ''
+            end_time = ''
+            start_obj = meeting_data.get('start', {})
+            end_obj = meeting_data.get('end', {})
+            
+            if isinstance(start_obj, dict):
+                start_time = start_obj.get('dateTime', '')
+            if isinstance(end_obj, dict):
+                end_time = end_obj.get('dateTime', '')
+                
+            # Safely get location
+            location = ''
+            loc_obj = meeting_data.get('location', {})
+            if isinstance(loc_obj, dict):
+                location = loc_obj.get('displayName', '')
+                
+            # Safely get online meeting URL
+            online_meeting_url = ''
+            online_meeting = meeting_data.get('onlineMeeting', {})
+            if isinstance(online_meeting, dict):
+                online_meeting_url = online_meeting.get('joinUrl', '')
             
             # Check if meeting already exists for this chat session
             cursor.execute('''
@@ -243,7 +282,7 @@ class MeetingDatabase:
             existing = cursor.fetchone()
             
             if existing:
-                meeting_id, ms_meeting_id = existing
+                meeting_id, existing_ms_meeting_id = existing
                 
                 # Update existing meeting
                 cursor.execute('''
@@ -261,13 +300,13 @@ class MeetingDatabase:
                 WHERE id = ?
                 ''', (
                     session_id,
-                    meeting_data.get('id', ''),
-                    meeting_data.get('subject', 'Meeting'),
-                    meeting_data.get('body', {}).get('content', ''),
-                    meeting_data.get('start', {}).get('dateTime', ''),
-                    meeting_data.get('end', {}).get('dateTime', ''),
-                    meeting_data.get('location', {}).get('displayName', ''),
-                    meeting_data.get('onlineMeeting', {}).get('joinUrl', ''),
+                    ms_meeting_id,
+                    subject,
+                    body_content,
+                    start_time,
+                    end_time,
+                    location,
+                    online_meeting_url,
                     attendees_json,
                     meeting_id
                 ))
@@ -287,13 +326,13 @@ class MeetingDatabase:
                 ''', (
                     session_id,
                     chat_session_id,
-                    meeting_data.get('id', ''),
-                    meeting_data.get('subject', 'Meeting'),
-                    meeting_data.get('body', {}).get('content', ''),
-                    meeting_data.get('start', {}).get('dateTime', ''),
-                    meeting_data.get('end', {}).get('dateTime', ''),
-                    meeting_data.get('location', {}).get('displayName', ''),
-                    meeting_data.get('onlineMeeting', {}).get('joinUrl', ''),
+                    ms_meeting_id,
+                    subject,
+                    body_content,
+                    start_time,
+                    end_time,
+                    location,
+                    online_meeting_url,
                     attendees_json
                 ))
                 
@@ -308,7 +347,7 @@ class MeetingDatabase:
         except Exception as e:
             self.logger.error(f"Error saving meeting: {e}", exc_info=True)
             return 0
-    
+        
     def get_meeting(self, chat_session_id: str) -> Dict[str, Any]:
         """
         Get meeting information for a chat session
