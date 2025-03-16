@@ -105,7 +105,7 @@ class ContactDatabase:
     
     def find_contacts_by_name(self, name: str) -> List[Dict[str, Any]]:
         """
-        Find contacts by name (first or last)
+        Find contacts by name (first or last) with improved name part handling
         
         Args:
             name (str): Name to search for
@@ -122,8 +122,10 @@ class ContactDatabase:
             name = name.strip().lower()
             self.logger.debug(f"Searching for name (lowercase): '{name}'")
             
-            # Split name into first and last components if possible
+            # Split name into components
             name_parts = name.split()
+            
+            results = []
             
             if len(name_parts) > 1:
                 # We have potentially both first and last name
@@ -132,22 +134,57 @@ class ContactDatabase:
                 
                 self.logger.debug(f"Searching for first_name={first_name}, last_name={last_name}")
                 
-                # Use LOWER() function for case-insensitive search on first and last name
+                # Try with exact first and last name
                 cursor.execute("""
                     SELECT * FROM contacts 
-                    WHERE (LOWER(first_name) LIKE ? AND LOWER(last_name) LIKE ?)
+                    WHERE (LOWER(first_name) = ? AND LOWER(last_name) = ?)
                 """, (first_name, last_name))
-            else:
-                # We only have one name part, search in both fields with case-insensitive matching
-                search_term = f"%{name}%"
-                self.logger.debug(f"Searching for name={search_term} in first or last name")
                 
+                results = [dict(row) for row in cursor.fetchall()]
+                
+                # If no exact match, try with LIKE
+                if not results:
+                    cursor.execute("""
+                        SELECT * FROM contacts 
+                        WHERE (LOWER(first_name) LIKE ? AND LOWER(last_name) LIKE ?)
+                    """, (f"{first_name}%", f"{last_name}%"))
+                    
+                    results = [dict(row) for row in cursor.fetchall()]
+            
+            # If no results yet, try individual name parts
+            if not results:
+                for part in name_parts:
+                    # Skip very short parts
+                    if len(part) <= 1:
+                        continue
+                        
+                    search_term = f"{part}%"
+                    
+                    # Search in both first_name and last_name
+                    cursor.execute("""
+                        SELECT * FROM contacts 
+                        WHERE LOWER(first_name) LIKE ? OR LOWER(last_name) LIKE ?
+                    """, (search_term, search_term))
+                    
+                    part_results = [dict(row) for row in cursor.fetchall()]
+                    if part_results:
+                        # Add unique results to the main results list
+                        for contact in part_results:
+                            if contact not in results:
+                                results.append(contact)
+            
+            # If still no results, try fuzzy matching with the whole name
+            if not results:
+                # Use a more permissive LIKE pattern
+                search_term = f"%{name}%"
                 cursor.execute("""
                     SELECT * FROM contacts 
-                    WHERE LOWER(first_name) LIKE ? OR LOWER(last_name) LIKE ?
+                    WHERE LOWER(first_name || ' ' || last_name) LIKE ?
+                    OR LOWER(last_name || ' ' || first_name) LIKE ?
                 """, (search_term, search_term))
+                
+                results = [dict(row) for row in cursor.fetchall()]
             
-            results = [dict(row) for row in cursor.fetchall()]
             conn.close()
             
             self.logger.info(f"Found {len(results)} contacts matching '{name}'")
@@ -156,7 +193,7 @@ class ContactDatabase:
         except Exception as e:
             self.logger.error(f"Error finding contacts: {e}", exc_info=True)
             return []
-        
+            
     def find_contacts_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         """
         Find a contact by their email

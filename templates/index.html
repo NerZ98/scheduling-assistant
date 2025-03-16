@@ -504,13 +504,13 @@
                 
                 // Add the "All" option at the top
                 formattedOptions += `
-                    <button class="email-option text-left bg-blue-50 hover:bg-blue-100 py-2 px-3 rounded-md transition-colors" 
-                            data-number="all">
-                        <label class="flex items-center cursor-pointer">
+                    <div class="email-option text-left bg-blue-50 hover:bg-blue-100 py-2 px-3 rounded-md transition-colors cursor-pointer" 
+                        data-number="all">
+                        <div class="flex items-center">
                             <input type="checkbox" class="mr-2 h-4 w-4 text-blue-600 focus:ring-blue-500 rounded">
                             <span class="font-semibold text-blue-600">All. </span> Select all contacts
-                        </label>
-                    </button>
+                        </div>
+                    </div>
                 `;
                 
                 // Filter and process the regular contact options
@@ -528,17 +528,17 @@
                     }
                     
                     formattedOptions += `
-                        <button class="email-option text-left bg-blue-50 hover:bg-blue-100 py-2 px-3 rounded-md transition-colors" 
-                                data-number="${number}">
-                            <label class="flex items-center cursor-pointer">
+                        <div class="email-option text-left bg-blue-50 hover:bg-blue-100 py-2 px-3 rounded-md transition-colors cursor-pointer" 
+                            data-number="${number}">
+                            <div class="flex items-center">
                                 <input type="checkbox" class="mr-2 h-4 w-4 text-blue-600 focus:ring-blue-500 rounded">
                                 <span class="font-semibold text-blue-600">${number}.</span> ${details}
-                            </label>
-                        </button>
+                            </div>
+                        </div>
                     `;
                 });
                 
-                // Add confirm button (but not select all since we have an explicit option)
+                // Add confirm button
                 formattedOptions += `
                     <div class="mt-2 flex justify-end">
                         <button id="submit-selection" class="bg-blue-600 text-white text-sm py-1 px-3 rounded hover:bg-blue-700">
@@ -614,44 +614,63 @@
             
             // Use event delegation for dynamically added elements
             document.addEventListener('click', function(e) {
-                // Handle checkbox clicks in email options
-                if (e.target && e.target.type === 'checkbox' && e.target.closest('.email-option')) {
-                    const option = e.target.closest('.email-option');
-                    const number = option.getAttribute('data-number');
+                // Find the closest email-option element from the click target
+                const emailOption = e.target.closest('.email-option');
+                
+                // Handle any click within an email option
+                if (emailOption) {
+                    const number = emailOption.getAttribute('data-number');
+                    const checkbox = emailOption.querySelector('input[type="checkbox"]');
                     
-                    if (e.target.checked) {
-                        selectedOptions.add(number);
-                    } else {
-                        selectedOptions.delete(number);
+                    // Don't toggle if the click was directly on the submit button
+                    if (e.target.id === 'submit-selection' || e.target.closest('#submit-selection')) {
+                        return;
                     }
                     
-                    // Don't submit yet, wait for the confirm button
-                    e.preventDefault();
-                    return;
-                }
-                
-                // Handle the select all button
-                if (e.target && e.target.id === 'select-all') {
-                    const checkboxes = document.querySelectorAll('.email-option input[type="checkbox"]');
-                    const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+                    // Toggle the checkbox unless we're clicking directly on it (it handles its own state)
+                    if (e.target !== checkbox) {
+                        checkbox.checked = !checkbox.checked;
+                    }
                     
-                    checkboxes.forEach(checkbox => {
-                        checkbox.checked = !allChecked;
-                        const number = checkbox.closest('.email-option').getAttribute('data-number');
+                    // Update selection set based on checkbox state
+                    if (checkbox.checked) {
+                        selectedOptions.add(number);
                         
-                        if (!allChecked) {
-                            selectedOptions.add(number);
-                        } else {
-                            selectedOptions.delete(number);
+                        // Special handling for "all" option
+                        if (number === 'all') {
+                            // Check all other checkboxes
+                            document.querySelectorAll('.email-option').forEach(opt => {
+                                const optNumber = opt.getAttribute('data-number');
+                                const optCheckbox = opt.querySelector('input[type="checkbox"]');
+                                if (optNumber !== 'all') {
+                                    optCheckbox.checked = true;
+                                    selectedOptions.add(optNumber);
+                                }
+                            });
                         }
-                    });
+                    } else {
+                        selectedOptions.delete(number);
+                        
+                        // If deselecting "all", uncheck all other options
+                        if (number === 'all') {
+                            document.querySelectorAll('.email-option').forEach(opt => {
+                                const optNumber = opt.getAttribute('data-number');
+                                const optCheckbox = opt.querySelector('input[type="checkbox"]');
+                                if (optNumber !== 'all') {
+                                    optCheckbox.checked = false;
+                                    selectedOptions.delete(optNumber);
+                                }
+                            });
+                        }
+                    }
                     
-                    e.preventDefault();
-                    return;
+                    console.log("Selected options:", Array.from(selectedOptions));
                 }
                 
                 // Handle the confirm selection button
-                if (e.target && e.target.id === 'submit-selection') {
+                if (e.target.id === 'submit-selection' || e.target.closest('#submit-selection')) {
+                    console.log("Confirm clicked with selections:", Array.from(selectedOptions));
+                    
                     if (selectedOptions.size === 0) {
                         // Alert user to select at least one option
                         alert('Please select at least one contact.');
@@ -659,7 +678,16 @@
                     }
                     
                     // Format selection for message
-                    const selectionText = Array.from(selectedOptions).join(' and ');
+                    let selectionText;
+                    
+                    // Check if "all" is selected
+                    if (selectedOptions.has('all')) {
+                        selectionText = 'all';
+                    } else {
+                        // Get all numbers excluding "all"
+                        const numbers = Array.from(selectedOptions).filter(n => n !== 'all');
+                        selectionText = numbers.join(' and ');
+                    }
                     
                     // Add user message showing the selection
                     addUserMessage(selectionText);
@@ -671,29 +699,10 @@
                     selectedOptions.clear();
                     
                     e.preventDefault();
-                    return;
-                }
-                
-                // Handle direct click on email option (for backwards compatibility)
-                const target = e.target.closest('.email-option');
-                if (target && !e.target.closest('input[type="checkbox"]')) {
-                    const checkbox = target.querySelector('input[type="checkbox"]');
-                    if (checkbox) {
-                        // Toggle checkbox
-                        checkbox.checked = !checkbox.checked;
-                        
-                        const number = target.getAttribute('data-number');
-                        
-                        if (checkbox.checked) {
-                            selectedOptions.add(number);
-                        } else {
-                            selectedOptions.delete(number);
-                        }
-                    }
                 }
             });
         }
-        
+
         // Escape HTML to prevent XSS
         function escapeHtml(html) {
             if (typeof html !== 'string') return '';

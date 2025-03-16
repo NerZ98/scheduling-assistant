@@ -527,10 +527,11 @@ class Chatbot:
         # Store updated emails
         self.contexts[session_id]['ATTENDEE_EMAILS'] = attendee_emails
         
-        # Format summary
+        # Format summary - ensure no unwanted formatting characters like **
         attendees_text = ", ".join(formatted_attendees)
         title = "Meeting"
         
+        # Clean the summary of any potential markdown or formatting characters
         summary = f"{title} scheduled for {date} at {time}, lasting {duration}, with {attendees_text}."
         
         # If there are missing emails, add a note
@@ -588,6 +589,9 @@ class Chatbot:
             Tuple[str, Dict[str, List[str]]]: Bot response and extracted entities
         """
         try:
+            # Log context state at the beginning
+            self.log_context_state(session_id, "Starting process_message")
+            
             # Initialize context if it doesn't exist
             if session_id not in self.contexts:
                 self.reset_context(session_id)
@@ -595,6 +599,9 @@ class Chatbot:
             # If we're awaiting confirmation, handle the confirmation response
             if self.contexts[session_id].get('AWAITING_CONFIRMATION', False):
                 response = self.handle_confirmation_response(message, session_id)
+                
+                # Log context state before returning
+                self.log_context_state(session_id, "Finished process_message - confirmation response")
                 return response, {}
                 
             # Check if this is an email selection message
@@ -658,7 +665,33 @@ class Chatbot:
                         names_with_emails = [f"{name} ({email})" for name, email in zip(selected_names, selected_emails)]
                         selection_text = ", ".join(names_with_emails)
                     
-                    # Check if there are more ambiguous attendees
+                    # After successfully handling a selection, check if there are more ambiguous attendees
+                    if 'ALL_AMBIGUOUS_ATTENDEES' in self.contexts[session_id]:
+                        current_index = self.contexts[session_id].get('CURRENT_AMBIGUOUS_INDEX', 0)
+                        all_ambiguous = self.contexts[session_id]['ALL_AMBIGUOUS_ATTENDEES']
+                        
+                        # Move to next ambiguous attendee if there are more
+                        next_index = current_index + 1
+                        if next_index < len(all_ambiguous):
+                            self.contexts[session_id]['CURRENT_AMBIGUOUS_INDEX'] = next_index
+                            next_attendee, next_records = all_ambiguous[next_index]
+                            options_text = self.format_contact_options(next_records)
+                            
+                            # Set the pending selection for the next attendee
+                            self.contexts[session_id]['PENDING_EMAIL_SELECTION'] = {
+                                'attendee': next_attendee,
+                                'options': next_records
+                            }
+                            
+                            # Log context state before returning
+                            self.log_context_state(session_id, "Processing next ambiguous attendee")
+                            return f"Selected {selection_text}. Multiple contacts found for '{next_attendee}'. Please select one or more by number (e.g., '1', '2', '1 and 2', or 'all'):\n{options_text}", {}
+                        else:
+                            # No more ambiguous attendees, clean up
+                            del self.contexts[session_id]['ALL_AMBIGUOUS_ATTENDEES']
+                            del self.contexts[session_id]['CURRENT_AMBIGUOUS_INDEX']
+                    
+                    # Check if there are more ambiguous attendees that haven't been handled yet
                     next_ambiguous = self.check_ambiguous_attendees(session_id)
                     if next_ambiguous:
                         next_attendee, next_records = next_ambiguous
@@ -670,6 +703,8 @@ class Chatbot:
                             'options': next_records
                         }
                         
+                        # Log context state before returning
+                        self.log_context_state(session_id, "Found more ambiguous attendees")
                         return f"Selected {selection_text}. Multiple contacts found for '{next_attendee}'. Please select one or more by number (e.g., '1', '2', '1 and 2', or 'all'):\n{options_text}", {}
                     
                     # Check context completeness AFTER selection to ensure it's fully evaluated
@@ -680,13 +715,20 @@ class Chatbot:
                         self.contexts[session_id]['AWAITING_CONFIRMATION'] = True
                         summary = self.generate_summary_with_emails(session_id)
                         confirmation_request = random.choice(self.prompts['CONFIRMATION_REQUEST']).format(summary=summary)
+                        
+                        # Log context state before returning
+                        self.log_context_state(session_id, "Confirming after selection")
                         return f"Selected {selection_text}. {confirmation_request}", {}
-                    
                     # Otherwise, prompt for missing information
+                    # Log context state before returning
+                    self.log_context_state(session_id, "Prompting for missing info after selection")
                     return f"Selected {selection_text}. " + self.generate_prompt(session_id), {}
                 
                 # Invalid selection
                 options_text = self.format_contact_options(options)
+                
+                # Log context state before returning
+                self.log_context_state(session_id, "Invalid selection")
                 return f"Invalid selection. Please select one or more numbers from the list (e.g., '1', '2', '1 and 2', or 'all'):\n{options_text}", {}
             
             # Extract entities from the message first
@@ -697,6 +739,8 @@ class Chatbot:
             special_response = self.check_special_intents(message)
             if special_response:
                 # Return the special response with empty entities
+                # Log context state before returning
+                self.log_context_state(session_id, "Special intent detected")
                 return special_response, {}
             
             # Process attendees before updating context
@@ -716,9 +760,15 @@ class Chatbot:
                             similar_names.append(f"{contact['first_name']} {contact['last_name']}")
                         
                         suggestions = ", ".join(similar_names[:5])  # Show up to 5 suggestions
+                        
+                        # Log context state before returning
+                        self.log_context_state(session_id, "Invalid attendee - not found")
                         return f"'{invalid_attendees[0]}' is not in the organization's contact list. Please choose from contacts like: {suggestions}", {}
                     else:
                         invalid_list = ", ".join([f"'{a}'" for a in invalid_attendees])
+                        
+                        # Log context state before returning
+                        self.log_context_state(session_id, "Multiple invalid attendees")
                         return f"The following people are not in the organization's contact list: {invalid_list}. Please choose attendees from the organization.", {}
                 
                 # Process valid attendees
@@ -765,8 +815,12 @@ class Chatbot:
                     if entity_type != 'ATTENDEE' and values:  # Don't overwrite attendees
                         original_entities[entity_type] = values.copy()
                 
-                # If there are ambiguous attendees, handle the first one
+                # Store all ambiguous attendees for sequential processing
                 if ambiguous_attendees:
+                    self.contexts[session_id]['ALL_AMBIGUOUS_ATTENDEES'] = ambiguous_attendees
+                    self.contexts[session_id]['CURRENT_AMBIGUOUS_INDEX'] = 0
+                    
+                    # Handle the first ambiguous attendee
                     attendee, records = ambiguous_attendees[0]
                     options_text = self.format_contact_options(records)
                     
@@ -782,6 +836,8 @@ class Chatbot:
                         'original_entities': original_entities  # Store original entities
                     }
                     
+                    # Log context state before returning
+                    self.log_context_state(session_id, "Multiple contacts for attendee")
                     return f"Multiple contacts found for '{attendee}'. Please select one or more by number (e.g., '1', '2', '1 and 2', or 'all'):\n{options_text}", entities
                 
                 # Update only non-attendee entities, since we've already handled attendees
@@ -792,18 +848,28 @@ class Chatbot:
                 self.update_context(session_id, entities)
             
             # Check if there are ambiguous attendees that haven't been handled yet
-            ambiguous_attendee = self.check_ambiguous_attendees(session_id)
-            if ambiguous_attendee:
-                attendee, records = ambiguous_attendee
-                options_text = self.format_contact_options(records)
+            if not self.contexts[session_id].get('PENDING_EMAIL_SELECTION'):
+                # Get all ambiguous attendees
+                all_ambiguous_attendees = self.check_all_ambiguous_attendees(session_id)
                 
-                # Set pending email selection in context
-                self.contexts[session_id]['PENDING_EMAIL_SELECTION'] = {
-                    'attendee': attendee,
-                    'options': records
-                }
-                
-                return f"Multiple contacts found for '{attendee}'. Please select one or more by number (e.g., '1', '2', '1 and 2', or 'all'):\n{options_text}", entities
+                if all_ambiguous_attendees:
+                    # Store all ambiguous attendees in context for sequential processing
+                    self.contexts[session_id]['ALL_AMBIGUOUS_ATTENDEES'] = all_ambiguous_attendees
+                    self.contexts[session_id]['CURRENT_AMBIGUOUS_INDEX'] = 0
+                    
+                    # Start with the first ambiguous attendee
+                    attendee, records = all_ambiguous_attendees[0]
+                    options_text = self.format_contact_options(records)
+                    
+                    # Set pending email selection in context
+                    self.contexts[session_id]['PENDING_EMAIL_SELECTION'] = {
+                        'attendee': attendee,
+                        'options': records
+                    }
+                    
+                    # Log context state before returning
+                    self.log_context_state(session_id, "Found ambiguous attendee after update")
+                    return f"Multiple contacts found for '{attendee}'. Please select one or more by number (e.g., '1', '2', '1 and 2', or 'all'):\n{options_text}", entities
             
             # Check if the context is complete
             is_complete = self.check_context_completeness(session_id)
@@ -818,16 +884,24 @@ class Chatbot:
                     summary = self.generate_summary_with_emails(session_id)
                     confirmation_request = random.choice(self.prompts['CONFIRMATION_REQUEST']).format(summary=summary)
                     
+                    # Log context state before returning
+                    self.log_context_state(session_id, "Asking for confirmation")
                     return confirmation_request, entities
                 
                 # If user has confirmed, generate a confirmed summary response
                 if self.contexts[session_id].get('CONFIRMED', False):
                     summary = self.generate_summary_with_emails(session_id)
                     response = f"{random.choice(self.prompts['CONFIRMATION_YES'])} {random.choice(self.prompts['SUMMARY'])} {summary}"
+                    
+                    # Log context state before returning
+                    self.log_context_state(session_id, "Confirmed scheduling")
                     return response, entities
             
             # Generate a prompt for missing information
             response = self.generate_prompt(session_id)
+            
+            # Log context state before returning
+            self.log_context_state(session_id, "Prompting for missing information")
             return response, entities
         
         except Exception as e:
@@ -835,7 +909,8 @@ class Chatbot:
             import traceback
             self.logger.error(traceback.format_exc())
             return random.choice(self.prompts['UNKNOWN']), {}
-                
+ 
+                                
     def generate_summary_with_teams_link(self, session_id: str, teams_link: str = None) -> str:
         """
         Generate a summary of the scheduling information including emails and Teams link
@@ -972,3 +1047,99 @@ class Chatbot:
                     invalid_attendees.append(attendee)
         
         return valid_attendees, invalid_attendees
+    
+    def log_context_state(self, session_id: str, prefix: str = "Context state") -> None:
+        """
+        Log the current state of the context for debugging
+        
+        Args:
+            session_id (str): The session identifier
+            prefix (str): Prefix for the log message
+        """
+        if session_id not in self.contexts:
+            self.logger.debug(f"{prefix}: No context for session {session_id}")
+            return
+            
+        context = self.contexts[session_id]
+        
+        # Log attendees with their status
+        attendees = context.get('ATTENDEE', [])
+        attendee_emails = context.get('ATTENDEE_EMAILS', {})
+        
+        self.logger.debug(f"{prefix}: Session {session_id}")
+        self.logger.debug(f"  DATE: {context.get('DATE', [])}")
+        self.logger.debug(f"  TIME: {context.get('TIME', [])}")
+        self.logger.debug(f"  DURATION: {context.get('DURATION', [])}")
+        
+        # More detailed logging for attendees
+        self.logger.debug(f"  ATTENDEE count: {len(attendees)}")
+        for i, attendee in enumerate(attendees):
+            has_email = '(' in attendee and '@' in attendee and ')' in attendee
+            has_selection = attendee in attendee_emails
+            email = attendee_emails.get(attendee, None) if has_selection else None
+            
+            status = "has embedded email" if has_email else (
+                f"has selected email: {email}" if has_selection else "needs email resolution"
+            )
+            
+            self.logger.debug(f"    [{i}] {attendee} - {status}")
+        
+        # Log ambiguity handling state
+        pending = context.get('PENDING_EMAIL_SELECTION', None)
+        if pending:
+            self.logger.debug(f"  Waiting for email selection for: {pending.get('attendee')}")
+        
+        all_ambiguous = context.get('ALL_AMBIGUOUS_ATTENDEES', [])
+        if all_ambiguous:
+            current_idx = context.get('CURRENT_AMBIGUOUS_INDEX', 0)
+            self.logger.debug(f"  Processing ambiguous attendees: {len(all_ambiguous)} total, currently at index {current_idx}")
+        
+        is_complete = context.get('COMPLETE', False)
+        is_confirmed = context.get('CONFIRMED', False)
+        awaiting_confirmation = context.get('AWAITING_CONFIRMATION', False)
+        
+        self.logger.debug(f"  State: complete={is_complete}, confirmed={is_confirmed}, awaiting_confirmation={awaiting_confirmation}")
+        
+    def check_all_ambiguous_attendees(self, session_id: str) -> List[Tuple[str, List[Dict[str, Any]]]]:
+        """
+        Check if there are any attendees with ambiguous (multiple) records
+        and return all of them at once
+        
+        Args:
+            session_id (str): The session identifier
+            
+        Returns:
+            List[Tuple[str, List[Dict]]]: List of tuples containing (attendee_name, records_list)
+        """
+        if session_id not in self.contexts:
+            return []
+        
+        # Get attendees
+        attendees = self.contexts[session_id].get('ATTENDEE', [])
+        
+        # Get already selected emails
+        selected_emails = self.contexts[session_id].get('ATTENDEE_EMAILS', {})
+        
+        # List to store all ambiguous attendees
+        all_ambiguous = []
+        
+        # Check each attendee that doesn't already have an email selection
+        for attendee in attendees:
+            # Skip attendees that already have emails in their name
+            if '(' in attendee and '@' in attendee and ')' in attendee:
+                continue
+                
+            if attendee in selected_emails:
+                # Already has an email selection
+                continue
+                
+            # Search for contacts matching this name
+            contacts = self.contact_db.find_contacts_by_name(attendee)
+            
+            # If multiple contacts found, add this attendee and the records to our list
+            if len(contacts) > 1:
+                self.logger.info(f"Found {len(contacts)} contacts for attendee '{attendee}'")
+                all_ambiguous.append((attendee, contacts))
+        
+        # Return list of all ambiguous attendees
+        return all_ambiguous
