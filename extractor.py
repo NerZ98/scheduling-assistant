@@ -255,6 +255,43 @@ class AdvancedEntityExtractor:
             'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'
         ]
         
+        # Define common words to exclude from attendees
+        common_words = [
+            'i', 'me', 'my', 'mine', 'you', 'your', 'he', 'she', 'his', 'her', 
+            'schedule', 'meeting', 'appointment', 'tomorrow', 'today',
+            
+            # Common verbs
+            'need', 'meet', 'discuss', 'plan', 'arrange', 'set', 'have', 'want', 'would', 'like',
+            'call', 'talk', 'speak', 'chat', 'sync', 'catch', 'get', 'make', 'put', 'take',
+            'create', 'organize', 'coordinate', 'establish', 'setup', 'schedule',
+            
+            # Common nouns related to meetings
+            'meeting', 'call', 'session', 'sync', 'discussion', 'conversation', 'appointment',
+            'huddle', 'gathering', 'event', 'conference', 'briefing', 'check-in', 'standup', 'planning',
+            
+            # Prepositions and conjunctions
+            'at', 'for', 'with', 'by', 'to', 'in', 'on', 'of', 'from', 'about', 'between',
+            'and', 'or', 'but', 'nor', 'yet', 'so', 'as', 'if', 'than', 'that', 'because',
+            'a', 'an', 'the', 'this', 'these', 'those', 'next', 'last', 'previous', 'upcoming',
+            
+            # Time-related words not already in time_date_keywords
+            'quick', 'brief', 'short', 'long', 'extended',
+            
+            # Common pronouns
+            'it', 'its', 'them', 'they', 'we', 'our', 'their'
+        ]
+        
+        # Command words to ignore in attendee extraction
+        command_words = [
+            'add', 'schedule', 'plan', 'create', 'set', 'arrange', 'invite', 'with', 'meeting', 'Add',
+            'schdule', 'shedule', 'schedual', 'shcedule', 'scehdule'  # Common misspellings
+        ]
+        
+        # Common command words for similarity checking
+        command_candidates = [
+            'schedule', 'plan', 'create', 'arrange', 'organize', 'meeting', 'appointment', 'invite'
+        ]
+        
         # Additional patterns to detect time and duration strings
         time_duration_patterns = [
             r'^\d+\s*(?:mins|min|minutes|m|hours|hour|hrs|hr)$',  # e.g., "15mins", "2hours" 
@@ -271,10 +308,23 @@ class AdvancedEntityExtractor:
             doc = self.nlp(text)
             self.logger.debug(f"SpaCy entities found: {[(ent.text, ent.label_) for ent in doc.ents]}")
             
+            # Get PERSON entities from SpaCy right here before any other extraction
             person_entities = [ent.text for ent in doc.ents if ent.label_ == 'PERSON']
             self.logger.debug(f"SpaCy identified person entities: {person_entities}")
             
-            # Time extraction - Do this FIRST to prevent time-only inputs being treated as names
+            # Process person entities to handle multiple names
+            full_names = []
+            for entity in person_entities:
+                # Check if there are multiple names in this entity (like "Mary Johnson and Michael Johnson")
+                if ' and ' in entity.lower() or '&' in entity:
+                    parts = entity.replace('&', ' and ').split(' and ')
+                    full_names.extend([part.strip() for part in parts if part.strip()])
+                else:
+                    full_names.append(entity)
+                    
+            self.logger.debug(f"Full names extracted: {full_names}")
+            
+            # Time extraction
             self.logger.debug("Beginning time extraction")
             time_patterns = [
                 r'\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b',
@@ -286,7 +336,7 @@ class AdvancedEntityExtractor:
             entities['TIME'] = time_regex.findall(text)
             self.logger.info(f"Extracted times: {entities['TIME']}")
             
-            # Duration extraction - Do this SECOND to prevent duration-only inputs being treated as names
+            # Duration extraction
             self.logger.debug("Beginning duration extraction")
             duration_patterns = [
                 # Patterns with units after number
@@ -402,9 +452,6 @@ class AdvancedEntityExtractor:
             # Preprocess text for attendee extraction
             attendee_text = text
 
-            # List of command words to ignore in attendee extraction
-            command_words = ['add', 'schedule', 'plan', 'create', 'set', 'arrange', 'invite', 'with', 'meeting', 'Add']
-
             # Replace command words with spaces
             for word in command_words:
                 pattern = r'(?i)\b' + word + r'\b'
@@ -452,32 +499,7 @@ class AdvancedEntityExtractor:
             # Apply improved filtering to remove time/date/duration values from attendees
             # Filter out query words, common words, time/date terms, and numerical values
             query_words = ['how', 'what', 'when', 'where', 'why', 'who', 'which', 'schedule', 'help', 'can']
-            # Add a much more comprehensive list of common words to filter out
-            common_words = [
-                # Original common words
-                'i', 'me', 'my', 'mine', 'you', 'your', 'he', 'she', 'his', 'her', 
-                'schedule', 'meeting', 'appointment', 'tomorrow', 'today',
-                
-                # Common verbs
-                'need', 'meet', 'discuss', 'plan', 'arrange', 'set', 'have', 'want', 'would', 'like',
-                'call', 'talk', 'speak', 'chat', 'sync', 'catch', 'get', 'make', 'put', 'take',
-                'create', 'organize', 'coordinate', 'establish', 'setup', 'schedule',
-                
-                # Common nouns related to meetings
-                'meeting', 'call', 'session', 'sync', 'discussion', 'conversation', 'appointment',
-                'huddle', 'gathering', 'event', 'conference', 'briefing', 'check-in', 'standup',
-                
-                # Prepositions and conjunctions
-                'at', 'for', 'with', 'by', 'to', 'in', 'on', 'of', 'from', 'about', 'between',
-                'and', 'or', 'but', 'nor', 'yet', 'so', 'as', 'if', 'than', 'that', 'because',
-                'a', 'an', 'the', 'this', 'these', 'those', 'next', 'last', 'previous', 'upcoming',
-                
-                # Time-related words not already in time_date_keywords
-                'quick', 'brief', 'short', 'long', 'extended'
-            ]
-            prepositions = ['at', 'for', 'with', 'by', 'to', 'in', 'on', 'of', 'from', 'about',
-                'and', 'or', 'but', 'nor', 'yet', 'so', 'as', 'if', 'than', 'that',
-                'a', 'an', 'the', 'this', 'these', 'those']
+
             # Add these debugging logs for the original attendees
             self.logger.debug(f"Original attendees before filtering: {attendees}")
             self.logger.debug(f"Query words for filtering: {query_words}")
@@ -487,67 +509,70 @@ class AdvancedEntityExtractor:
 
             filtered_attendees = []
             for name in attendees:
-                # Convert to lowercase for comparison
-                name_lower = name.lower()
-                
-                # Check common words first (including verbs, nouns, etc.)
-                if name_lower in common_words:
-                    self.logger.debug(f"Filtering out attendee '{name}' - matches common word")
+                # Skip if it's a query word, common word, or command word
+                if name.lower() in [q.lower() for q in query_words + common_words + command_words]:
+                    self.logger.debug(f"Filtering out attendee '{name}' - matches query/common/command word")
                     continue
                     
-                # Check if it's only standalone letters or very short
-                if len(name_lower) <= 2:
-                    self.logger.debug(f"Filtering out attendee '{name}' - too short")
-                    continue
-                
-                # Skip if it's a query word, common word, or command word
-                if name_lower in [q.lower() for q in query_words + command_words]:
-                    self.logger.debug(f"Filtering out attendee '{name}' - matches query/command word")
-                    continue
-                
-                # Add this check in your filtering logic
-                if not self.looks_like_name(name):
-                    self.logger.debug(f"Filtering out attendee '{name}' - doesn't look like a name")
-                    continue
-
                 # Skip if it's a time/date keyword
-                if name_lower in time_date_keywords:
+                if name.lower() in time_date_keywords:
                     self.logger.debug(f"Filtering out attendee '{name}' - matches time/date keyword")
                     continue
-                
+                    
                 # Skip if it's only a number or contains mostly digits
-                if name_lower.isdigit() or (sum(c.isdigit() for c in name_lower) / len(name_lower) > 0.5):
+                if name.isdigit() or (sum(c.isdigit() for c in name) / len(name) > 0.5):
                     self.logger.debug(f"Filtering out attendee '{name}' - mostly numeric")
                     continue
                 
-                # Additional check for time/duration patterns
+                # Check for misspelled commands using string similarity
                 skip = False
+                for command in command_candidates:
+                    # Simple character-level similarity check
+                    if len(name) >= 4 and self.similar_chars(name.lower(), command) > 0.7:
+                        self.logger.debug(f"Filtering out '{name}' - likely misspelled command")
+                        skip = True
+                        break
+                        
+                if skip:
+                    continue
+                    
+                # Additional check for time/duration patterns
                 for pattern in time_duration_regex:
-                    if pattern.match(name_lower):
+                    if pattern.match(name.lower()):
                         skip = True
                         self.logger.debug(f"Filtering out '{name}' - matches time/duration pattern")
                         break
                 
                 if skip:
                     continue
-                
+                    
                 # Skip if it appears in other entity types we've already extracted
                 skip = False
                 for entity_type in ['TIME', 'DATE', 'DURATION']:
                     for entity_value in entities.get(entity_type, []):
-                        if name_lower in entity_value.lower():
+                        if name.lower() in entity_value.lower():
                             skip = True
                             self.logger.debug(f"Filtering out attendee '{name}' - appears in {entity_type} entity")
                             break
                     if skip:
                         break
-                
                 if skip:
                     continue
-                
+                    
+                # Skip very short names (likely not valid attendees)
+                if len(name) <= 1:
+                    self.logger.debug(f"Filtering out attendee '{name}' - too short")
+                    continue
+                    
                 # If it passed all filters, add to filtered attendees
                 self.logger.debug(f"Keeping attendee: '{name}' - passed all filters")
                 filtered_attendees.append(name)
+
+            # Add full names from SpaCy to the filtered attendees
+            for full_name in full_names:
+                if full_name not in filtered_attendees:
+                    filtered_attendees.append(full_name)
+                    self.logger.debug(f"Added full name from SpaCy: {full_name}")
 
             # Remove duplicates while preserving order
             unique_attendees = []
@@ -570,7 +595,7 @@ class AdvancedEntityExtractor:
         except Exception as e:
             self.logger.error(f"Error during entity extraction: {e}", exc_info=True)
             raise
-                    
+                        
     def validate_attendees(self, attendees):
         """
         Validate attendees against the contacts database
@@ -732,3 +757,28 @@ class AdvancedEntityExtractor:
             return False
             
         return True
+    
+    # Add this helper function to your AdvancedEntityExtractor class
+    def similar_chars(self, a, b):
+        """
+        Calculate character-level similarity between two strings
+        
+        Args:
+            a (str): First string
+            b (str): Second string
+            
+        Returns:
+            float: Similarity ratio between 0 and 1
+        """
+        if not a or not b:
+            return 0
+        
+        # Convert to lowercase
+        a = a.lower()
+        b = b.lower()
+        
+        # Count common characters
+        common = sum(1 for c in a if c in b)
+        
+        # Return similarity ratio
+        return common / max(len(a), len(b))

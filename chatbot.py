@@ -1123,7 +1123,7 @@ class Chatbot:
         # List to store all ambiguous attendees
         all_ambiguous = []
         
-        # Check each attendee that doesn't already have an email selection
+        # Process each attendee by their full name
         for attendee in attendees:
             # Skip attendees that already have emails in their name
             if '(' in attendee and '@' in attendee and ')' in attendee:
@@ -1132,10 +1132,24 @@ class Chatbot:
             if attendee in selected_emails:
                 # Already has an email selection
                 continue
-                
-            # Search for contacts matching this name
-            contacts = self.contact_db.find_contacts_by_name(attendee)
             
+            # Improved handling for searching contacts by name
+            contacts = []
+            
+            # Check if this is a full name (first and last)
+            name_parts = attendee.split()
+            if len(name_parts) >= 2:
+                # This is a full name, search for exact match first
+                contacts = self.contact_db.find_contacts_by_name(attendee)
+                
+                # If no exact match, try searching just by last name as fallback
+                if not contacts:
+                    last_name = name_parts[-1]
+                    contacts = self.contact_db.find_contacts_by_name(last_name)
+            else:
+                # Single name component - search as is
+                contacts = self.contact_db.find_contacts_by_name(attendee)
+                
             # If multiple contacts found, add this attendee and the records to our list
             if len(contacts) > 1:
                 self.logger.info(f"Found {len(contacts)} contacts for attendee '{attendee}'")
