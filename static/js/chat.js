@@ -226,14 +226,37 @@ document.addEventListener('DOMContentLoaded', function() {
             const [introText, optionsText] = message.split('Please select one or more by number');
             
             // Format the introduction part
-            const formattedIntro = `<p class="mb-2">${introText} Please select one or more by number (e.g., "1", "2", "1 and 2", or "all"):</p>`;
+            const formattedIntro = `<p class="mb-2">${introText} Please select one or more:</p>`;
             
             // Format each option as a clickable button with checkboxes
             const options = optionsText.trim().split('\n');
             let formattedOptions = '<div class="grid gap-2 mt-2">';
             
+            // Add the "All" option at the top
+            formattedOptions += `
+                <button class="email-option text-left bg-blue-50 hover:bg-blue-100 py-2 px-3 rounded-md transition-colors" 
+                        data-number="all">
+                    <label class="flex items-center cursor-pointer">
+                        <input type="checkbox" class="mr-2 h-4 w-4 text-blue-600 focus:ring-blue-500 rounded">
+                        <span class="font-semibold text-blue-600">All.</span> Select all contacts
+                    </label>
+                </button>
+            `;
+            
+            // Filter and process the regular contact options
             options.forEach(option => {
+                // Skip options that don't have proper format or contain 'undefined'
+                if (!option.includes('. ') || option.includes('undefined')) {
+                    return;
+                }
+                
                 const [number, details] = option.split('. ', 2);
+                
+                // Skip if we don't have valid details
+                if (!details || details.trim() === '') {
+                    return;
+                }
+                
                 formattedOptions += `
                     <button class="email-option text-left bg-blue-50 hover:bg-blue-100 py-2 px-3 rounded-md transition-colors" 
                             data-number="${number}">
@@ -245,12 +268,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 `;
             });
             
-            // Add select all option and confirm button
+            // Add confirm button (but not select all since we have an explicit option)
             formattedOptions += `
-                <div class="mt-2 flex justify-between">
-                    <button id="select-all" class="text-blue-600 text-sm hover:text-blue-800">
-                        Select All
-                    </button>
+                <div class="mt-2 flex justify-end">
                     <button id="submit-selection" class="bg-blue-600 text-white text-sm py-1 px-3 rounded hover:bg-blue-700">
                         Confirm Selection
                     </button>
@@ -273,8 +293,9 @@ document.addEventListener('DOMContentLoaded', function() {
         // Not an email-related message, return as is
         return escapeHtml(message);
     }
-    
+
     // Function to handle clicks on email options
+    // Update the setupEmailOptionListeners function in chat.js
     function setupEmailOptionListeners() {
         // Store selected options
         let selectedOptions = new Set();
@@ -286,33 +307,32 @@ document.addEventListener('DOMContentLoaded', function() {
                 const option = e.target.closest('.email-option');
                 const number = option.getAttribute('data-number');
                 
-                if (e.target.checked) {
-                    selectedOptions.add(number);
-                } else {
-                    selectedOptions.delete(number);
-                }
-                
-                // Don't submit yet, wait for the confirm button
-                e.preventDefault();
-                return;
-            }
-            
-            // Handle the select all button
-            if (e.target && e.target.id === 'select-all') {
-                const checkboxes = document.querySelectorAll('.email-option input[type="checkbox"]');
-                const allChecked = Array.from(checkboxes).every(cb => cb.checked);
-                
-                checkboxes.forEach(checkbox => {
-                    checkbox.checked = !allChecked;
-                    const number = checkbox.closest('.email-option').getAttribute('data-number');
+                // Special handling for "all" option
+                if (number === 'all') {
+                    const allChecked = e.target.checked;
+                    const checkboxes = document.querySelectorAll('.email-option input[type="checkbox"]');
                     
-                    if (!allChecked) {
+                    // Check/uncheck all options
+                    checkboxes.forEach(checkbox => {
+                        checkbox.checked = allChecked;
+                        const optNumber = checkbox.closest('.email-option').getAttribute('data-number');
+                        
+                        if (allChecked && optNumber !== 'all') {
+                            selectedOptions.add(optNumber);
+                        } else if (!allChecked) {
+                            selectedOptions.delete(optNumber);
+                        }
+                    });
+                } else {
+                    // Regular option handling
+                    if (e.target.checked) {
                         selectedOptions.add(number);
                     } else {
                         selectedOptions.delete(number);
                     }
-                });
+                }
                 
+                // Don't submit yet, wait for the confirm button
                 e.preventDefault();
                 return;
             }
@@ -325,8 +345,16 @@ document.addEventListener('DOMContentLoaded', function() {
                     return;
                 }
                 
+                // Check if "all" is selected
+                const allSelected = document.querySelector('.email-option[data-number="all"] input[type="checkbox"]').checked;
+                
                 // Format selection for message
-                const selectionText = Array.from(selectedOptions).join(' and ');
+                let selectionText;
+                if (allSelected) {
+                    selectionText = "all";
+                } else {
+                    selectionText = Array.from(selectedOptions).join(' and ');
+                }
                 
                 // Add user message showing the selection
                 addUserMessage(selectionText);
@@ -351,16 +379,35 @@ document.addEventListener('DOMContentLoaded', function() {
                     
                     const number = target.getAttribute('data-number');
                     
-                    if (checkbox.checked) {
-                        selectedOptions.add(number);
+                    // Special handling for "all" option
+                    if (number === 'all') {
+                        const allChecked = checkbox.checked;
+                        const checkboxes = document.querySelectorAll('.email-option input[type="checkbox"]');
+                        
+                        // Check/uncheck all options
+                        checkboxes.forEach(cb => {
+                            cb.checked = allChecked;
+                            const optNumber = cb.closest('.email-option').getAttribute('data-number');
+                            
+                            if (allChecked && optNumber !== 'all') {
+                                selectedOptions.add(optNumber);
+                            } else if (!allChecked) {
+                                selectedOptions.delete(optNumber);
+                            }
+                        });
                     } else {
-                        selectedOptions.delete(number);
+                        // Regular option
+                        if (checkbox.checked) {
+                            selectedOptions.add(number);
+                        } else {
+                            selectedOptions.delete(number);
+                        }
                     }
                 }
             }
         });
     }
-    
+
     // Escape HTML to prevent XSS
     function escapeHtml(html) {
         if (typeof html !== 'string') return '';
