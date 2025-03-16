@@ -473,8 +473,9 @@ class AdvancedEntityExtractor:
         except Exception as e:
             self.logger.error(f"Error during entity extraction: {e}", exc_info=True)
             raise
-        
-    def validate_attendees(self, attendees: List[str]) -> tuple[List[str], List[str]]:
+       
+       
+    def validate_attendees(self, attendees):
         """
         Validate attendees against the contacts database
         
@@ -528,3 +529,5 @@ class AdvancedEntityExtractor:
                     invalid_attendees.append(attendee)
         
         return valid_attendees, invalid_attendees
+            
+        

@@ -118,6 +118,26 @@
             border-color: #93c5fd;
             transition: all 0.2s;
         }
+            #confirmation-ui {
+            margin-top: 1rem;
+            margin-bottom: 1rem;
+            animation: fadeIn ease 0.3s;
+        }
+        
+        #confirmation-ui button {
+            transition: all 0.2s ease;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        
+        #confirmation-ui button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        
+        #confirmation-ui button:active {
+            transform: translateY(0);
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+        }
     </style>
 </head>
 <body class="bg-gray-100 min-h-screen">
@@ -330,6 +350,14 @@
                 // Update entity panel if there are entities
                 updateEntityPanel(data.entities, data.complete);
                 
+                // If we're awaiting confirmation, show confirmation UI
+                if (data.awaiting_confirmation) {
+                    showConfirmationButtons();
+                } else {
+                    // Hide confirmation buttons if they exist and we're no longer awaiting confirmation
+                    hideConfirmationButtons();
+                }
+                
                 // Check meeting status again if context is complete
                 if (data.complete) {
                     setTimeout(checkMeetingStatus, 1000); // Wait for meeting creation
@@ -468,14 +496,37 @@
                 const [introText, optionsText] = message.split('Please select one or more by number');
                 
                 // Format the introduction part
-                const formattedIntro = `<p class="mb-2">${introText} Please select one or more by number (e.g., "1", "2", "1 and 2", or "all"):</p>`;
+                const formattedIntro = `<p class="mb-2">${introText} Please select one or more:</p>`;
                 
                 // Format each option as a clickable button with checkboxes
                 const options = optionsText.trim().split('\n');
                 let formattedOptions = '<div class="grid gap-2 mt-2">';
                 
+                // Add the "All" option at the top
+                formattedOptions += `
+                    <button class="email-option text-left bg-blue-50 hover:bg-blue-100 py-2 px-3 rounded-md transition-colors" 
+                            data-number="all">
+                        <label class="flex items-center cursor-pointer">
+                            <input type="checkbox" class="mr-2 h-4 w-4 text-blue-600 focus:ring-blue-500 rounded">
+                            <span class="font-semibold text-blue-600">All. </span> Select all contacts
+                        </label>
+                    </button>
+                `;
+                
+                // Filter and process the regular contact options
                 options.forEach(option => {
+                    // Skip options that don't have proper format or contain 'undefined'
+                    if (!option.includes('. ') || option.includes('undefined')) {
+                        return;
+                    }
+                    
                     const [number, details] = option.split('. ', 2);
+                    
+                    // Skip if we don't have valid details
+                    if (!details || details.trim() === '') {
+                        return;
+                    }
+                    
                     formattedOptions += `
                         <button class="email-option text-left bg-blue-50 hover:bg-blue-100 py-2 px-3 rounded-md transition-colors" 
                                 data-number="${number}">
@@ -487,12 +538,9 @@
                     `;
                 });
                 
-                // Add select all option and confirm button
+                // Add confirm button (but not select all since we have an explicit option)
                 formattedOptions += `
-                    <div class="mt-2 flex justify-between">
-                        <button id="select-all" class="text-blue-600 text-sm hover:text-blue-800">
-                            Select All
-                        </button>
+                    <div class="mt-2 flex justify-end">
                         <button id="submit-selection" class="bg-blue-600 text-white text-sm py-1 px-3 rounded hover:bg-blue-700">
                             Confirm Selection
                         </button>
@@ -512,28 +560,53 @@
                     '<span class="text-blue-700 font-medium">$1</span> <span class="text-blue-500 text-sm">($2)</span>');
             }
             
-            // Check for Teams link in the message
-            if (message.includes('Microsoft Teams meeting') && message.includes('https://teams.microsoft.com/')) {
-                // Extract Teams link
-                const teamsLinkMatch = message.match(/(https:\/\/teams\.microsoft\.com\/[^\s]+)/);
-                if (teamsLinkMatch) {
-                    const teamsLink = teamsLinkMatch[1];
-                    
-                    // Format message with Teams link button
-                    const parts = message.split(teamsLink);
-                    
-                    return parts[0] + 
-                           `<a href="${teamsLink}" target="_blank" class="teams-link inline-block mt-2 mb-2">
-                               <i class="fab fa-microsoft"></i> Join Teams Meeting
-                           </a>` + 
-                           (parts[1] || '');
-                }
-            }
-            
             // Not an email-related message, return as is
             return escapeHtml(message);
         }
-        
+
+        function showConfirmationButtons() {
+            hideConfirmationButtons();
+            
+            // Create confirmation UI
+            const confirmationUI = document.createElement('div');
+            confirmationUI.id = 'confirmation-ui';
+            confirmationUI.className = 'flex items-center justify-center space-x-4 my-4 fade-in';
+            confirmationUI.innerHTML = `
+                <button id="confirm-yes" class="bg-green-600 hover:bg-green-700 text-white rounded-lg px-6 py-2 transition">
+                    <i class="fas fa-check mr-2"></i> Yes, Confirm
+                </button>
+                <button id="confirm-no" class="bg-red-600 hover:bg-red-700 text-white rounded-lg px-6 py-2 transition">
+                    <i class="fas fa-times mr-2"></i> No, Change Details
+                </button>
+            `;
+            
+            // Add event listeners
+            confirmationUI.querySelector('#confirm-yes').addEventListener('click', function() {
+                // Send confirmation
+                addUserMessage("Yes");
+                sendMessage("Yes");
+                hideConfirmationButtons();
+            });
+            
+            confirmationUI.querySelector('#confirm-no').addEventListener('click', function() {
+                // Send rejection
+                addUserMessage("No");
+                sendMessage("No");
+                hideConfirmationButtons();
+            });
+            
+            // Add to the chat container
+            chatContainer.appendChild(confirmationUI);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function hideConfirmationButtons() {
+            const confirmationUI = document.getElementById('confirmation-ui');
+            if (confirmationUI) {
+                confirmationUI.remove();
+            }
+        }
+
         // Function to handle clicks on email options
         function setupEmailOptionListeners() {
             // Store selected options

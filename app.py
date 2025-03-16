@@ -114,13 +114,14 @@ def message():
     session['chat_history'] = chat_history
     session.modified = True
     
-    # Check if context is complete and create Microsoft meeting if connected
+    # Get context to check confirmation status
+    context = chatbot.get_context(session_id)
+    
+    # Check if context is complete AND confirmed 
     is_complete = chatbot.is_context_complete(session_id)
     
-    # If complete and not already created, create Microsoft meeting
-    if is_complete:
-        context = chatbot.get_context(session_id)
-        
+    # If complete, confirmed, and not already created, create Microsoft meeting
+    if is_complete and context.get('CONFIRMED', False):
         # Check if user is connected to Microsoft
         ms_session = meeting_db.get_session(session_id)
         user_id = session.get('user_id')
@@ -159,13 +160,17 @@ def message():
             # User not authenticated, add login message
             bot_response += "\n\nTo create this meeting in your Microsoft calendar, please click 'Connect to Microsoft' to authorize access."
     
+    # Check if we are awaiting confirmation (to update UI indicators)
+    awaiting_confirmation = context.get('AWAITING_CONFIRMATION', False)
+    
     # Return the response
     return jsonify({
         'response': bot_response,
         'entities': entities,
-        'complete': is_complete
+        'complete': is_complete,
+        'awaiting_confirmation': awaiting_confirmation
     })
-    
+       
 @app.route('/reset', methods=['POST'])
 def reset():
     """Reset the chat session"""

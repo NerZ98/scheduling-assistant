@@ -102,6 +102,26 @@ class Chatbot:
                 "I'm your scheduling assistant. You can schedule meetings by telling me the date, time, duration, and attendees. For example, 'Schedule a meeting tomorrow at 3pm for 1 hour with John and Mary.' I'll ask for any missing information.",
                 "To schedule something, just tell me when it should happen, for how long, and with whom. I'll guide you through the process by asking for any details you haven't provided.",
                 "I can help you schedule events! Just mention the date (like 'tomorrow' or 'next Monday'), time (like '3pm'), duration (like '30 minutes'), and who's attending. I'll ask you for any information you haven't provided."
+            ],
+            'CONFIRMATION_REQUEST': [
+                "Here's what I've got: {summary} Is this correct? (Yes/No)",
+                "I've collected all the details: {summary} Does this look right? (Yes/No)",
+                "Please confirm these meeting details: {summary} Is everything correct? (Yes/No)"
+            ],
+            'CHANGE_REQUEST': [
+                "What would you like to change? You can update the date, time, duration, or attendees.",
+                "Please let me know what detail needs to be updated. You can specify a new date, time, duration, or attendees.",
+                "What detail would you like to modify? Just let me know the new information."
+            ],
+            'CONFIRMATION_YES': [
+                "Great! I'll schedule this meeting now.",
+                "Perfect! I'll go ahead and schedule this for you.",
+                "Excellent! I'll set up this meeting immediately."
+            ],
+            'CONFIRMATION_NO': [
+                "No problem. What would you like to change?",
+                "I understand. What details would you like to update?",
+                "Sure thing. Please tell me what needs to be corrected."
             ]
         }
     
@@ -119,7 +139,9 @@ class Chatbot:
             'ATTENDEE': [],
             'ATTENDEE_EMAILS': {},
             'SUMMARY': None,
-            'COMPLETE': False
+            'COMPLETE': False,
+            'CONFIRMED': False,  # Tracks whether user has confirmed
+            'AWAITING_CONFIRMATION': False  # Tracks if we're waiting for user to confirm
         }
         self.logger.info(f"Context reset for session {session_id}")
     
@@ -159,6 +181,12 @@ class Chatbot:
                     existing = set(self.contexts[session_id][entity_type])
                     new_values = existing.union(set(values))
                     self.contexts[session_id][entity_type] = list(new_values)
+        
+        # If we're updating entities, we need to reset confirmation status
+        # because the details have changed
+        if entities:
+            self.contexts[session_id]['CONFIRMED'] = False
+            self.contexts[session_id]['AWAITING_CONFIRMATION'] = False
         
         # Check if context is complete and update status
         self.check_context_completeness(session_id)
@@ -202,18 +230,24 @@ class Chatbot:
 
     def is_context_complete(self, session_id: str) -> bool:
         """
-        Check if the context is complete
+        Check if the context is complete and confirmed
         
         Args:
             session_id (str): The session identifier
             
         Returns:
-            bool: True if context is complete, False otherwise
+            bool: True if context is complete and confirmed, False otherwise
         """
         if session_id not in self.contexts:
             return False
         
-        return self.contexts[session_id].get('COMPLETE', False)
+        context = self.contexts[session_id]
+        is_complete = context.get('COMPLETE', False)
+        is_confirmed = context.get('CONFIRMED', False)
+        
+        # For external checks (like in app.py), we consider a context fully complete
+        # only when all required fields are present AND the user has confirmed
+        return is_complete and is_confirmed
     
     def get_missing_entities(self, session_id: str) -> List[str]:
         """
@@ -508,6 +542,39 @@ class Chatbot:
                 summary += f" Note: No emails were found for these attendees: {missing_names}."
         
         return summary
+
+    def handle_confirmation_response(self, message: str, session_id: str) -> str:
+        """
+        Handle user's response to a confirmation request
+        
+        Args:
+            message (str): The user message
+            session_id (str): The session identifier
+            
+        Returns:
+            str: Response message
+        """
+        # Normalize the message text for easier matching
+        normalized_message = message.lower().strip()
+        
+        # Check for positive responses
+        positive_responses = ['yes', 'yeah', 'yep', 'correct', 'right', 'looks good', 'sure', 'confirm', 'ok', 'okay']
+        negative_responses = ['no', 'nope', 'not correct', 'wrong', 'change', 'modify', 'update', 'incorrect', 'fix']
+        
+        if any(pos in normalized_message for pos in positive_responses):
+            # User confirmed the meeting details
+            self.contexts[session_id]['CONFIRMED'] = True
+            self.contexts[session_id]['AWAITING_CONFIRMATION'] = False
+            return random.choice(self.prompts['CONFIRMATION_YES'])
+        
+        elif any(neg in normalized_message for neg in negative_responses):
+            # User wants to change something
+            self.contexts[session_id]['AWAITING_CONFIRMATION'] = False
+            return random.choice(self.prompts['CHANGE_REQUEST'])
+        
+        else:
+            # Unclear response, ask again
+            return "I didn't understand. Please answer 'yes' to confirm or 'no' to make changes."
     
     def process_message(self, message: str, session_id: str) -> Tuple[str, Dict[str, List[str]]]:
         """
@@ -524,6 +591,11 @@ class Chatbot:
             # Initialize context if it doesn't exist
             if session_id not in self.contexts:
                 self.reset_context(session_id)
+            
+            # If we're awaiting confirmation, handle the confirmation response
+            if self.contexts[session_id].get('AWAITING_CONFIRMATION', False):
+                response = self.handle_confirmation_response(message, session_id)
+                return response, {}
                 
             # Check if this is an email selection message
             if session_id in self.contexts and 'PENDING_EMAIL_SELECTION' in self.contexts[session_id]:
@@ -603,11 +675,12 @@ class Chatbot:
                     # Check context completeness AFTER selection to ensure it's fully evaluated
                     is_complete = self.check_context_completeness(session_id)
                     
-                    # If context is complete, generate summary
-                    if is_complete:
+                    # If context is complete, show confirmation step
+                    if is_complete and not self.contexts[session_id].get('AWAITING_CONFIRMATION', False):
+                        self.contexts[session_id]['AWAITING_CONFIRMATION'] = True
                         summary = self.generate_summary_with_emails(session_id)
-                        response = f"Selected {selection_text}. {random.choice(self.prompts['CONFIRMATION'])} {random.choice(self.prompts['SUMMARY'])} {summary}"
-                        return response, {}
+                        confirmation_request = random.choice(self.prompts['CONFIRMATION_REQUEST']).format(summary=summary)
+                        return f"Selected {selection_text}. {confirmation_request}", {}
                     
                     # Otherwise, prompt for missing information
                     return f"Selected {selection_text}. " + self.generate_prompt(session_id), {}
@@ -627,7 +700,6 @@ class Chatbot:
                 return special_response, {}
             
             # Process attendees before updating context
-
             if 'ATTENDEE' in entities and entities['ATTENDEE']:
                 self.logger.info(f"Processing attendees: {entities['ATTENDEE']}")
                 
@@ -737,13 +809,25 @@ class Chatbot:
             is_complete = self.check_context_completeness(session_id)
             
             if is_complete:
-                # Generate a summary response with emails
-                summary = self.generate_summary_with_emails(session_id)
-                response = f"{random.choice(self.prompts['CONFIRMATION'])} {random.choice(self.prompts['SUMMARY'])} {summary}"
-            else:
-                # Generate a prompt for missing information
-                response = self.generate_prompt(session_id)
+                # If we haven't asked for confirmation yet and the user hasn't confirmed
+                if not self.contexts[session_id].get('AWAITING_CONFIRMATION', False) and not self.contexts[session_id].get('CONFIRMED', False):
+                    # Set awaiting confirmation flag
+                    self.contexts[session_id]['AWAITING_CONFIRMATION'] = True
+                    
+                    # Generate a summary and ask for confirmation
+                    summary = self.generate_summary_with_emails(session_id)
+                    confirmation_request = random.choice(self.prompts['CONFIRMATION_REQUEST']).format(summary=summary)
+                    
+                    return confirmation_request, entities
+                
+                # If user has confirmed, generate a confirmed summary response
+                if self.contexts[session_id].get('CONFIRMED', False):
+                    summary = self.generate_summary_with_emails(session_id)
+                    response = f"{random.choice(self.prompts['CONFIRMATION_YES'])} {random.choice(self.prompts['SUMMARY'])} {summary}"
+                    return response, entities
             
+            # Generate a prompt for missing information
+            response = self.generate_prompt(session_id)
             return response, entities
         
         except Exception as e:
@@ -833,3 +917,58 @@ class Chatbot:
         }
         
         return meeting_data
+    
+    def validate_attendees(self, attendees):
+        """
+        Validate attendees against the contacts database
+        
+        Args:
+            attendees (List[str]): List of attendee names to validate
+            
+        Returns:
+            Tuple[List[str], List[str]]: Valid attendees and invalid attendees
+        """
+        valid_attendees = []
+        invalid_attendees = []
+        
+        for attendee in attendees:
+            # Skip attendees that already have emails in their name
+            if '(' in attendee and '@' in attendee and ')' in attendee:
+                valid_attendees.append(attendee)
+                continue
+            
+            # Search for contacts matching this name
+            contacts = self.contact_db.find_contacts_by_name(attendee)
+            
+            if contacts:
+                valid_attendees.append(attendee)
+            else:
+                # Try fuzzy matching - check if any contact name is similar to this attendee
+                all_contacts = self.contact_db.get_all_contacts()
+                found_match = False
+                
+                for contact in all_contacts:
+                    full_name = f"{contact['first_name']} {contact['last_name']}".lower()
+                    attendee_lower = attendee.lower()
+                    
+                    # Check if name parts are similar
+                    if (attendee_lower in full_name or
+                        attendee_lower in contact['first_name'].lower() or
+                        attendee_lower in contact['last_name'].lower() or
+                        # Check if first few letters match
+                        (len(attendee_lower) >= 3 and (
+                            contact['first_name'].lower().startswith(attendee_lower[:3]) or
+                            contact['last_name'].lower().startswith(attendee_lower[:3])
+                        ))):
+                        
+                        # Add the correct name instead of the misspelled one
+                        correct_name = f"{contact['first_name']} {contact['last_name']}"
+                        valid_attendees.append(correct_name)
+                        found_match = True
+                        self.logger.info(f"Found fuzzy match for '{attendee}': '{correct_name}'")
+                        break
+                
+                if not found_match:
+                    invalid_attendees.append(attendee)
+        
+        return valid_attendees, invalid_attendees
