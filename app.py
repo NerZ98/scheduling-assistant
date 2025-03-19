@@ -1,7 +1,7 @@
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
 import os
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 import uuid
 import logging
 import secrets
@@ -485,7 +485,6 @@ def debug_ms_token_test():
             'error': str(e)
         }), 500
 
-# Helper function to prepare meeting data from chat context
 def prepare_meeting_data_from_context(context):
     """
     Convert chat context to Microsoft Graph meeting data format
@@ -497,10 +496,39 @@ def prepare_meeting_data_from_context(context):
         Dict: Meeting data for Microsoft Graph API
     """
     # Get date, time, duration and attendees from context
-    date = context.get('DATE', [''])[0]  # e.g., "2023-03-15"
+    date = context.get('DATE', [''])[0]  # e.g., "2023-03-15" or "day after tomorrow"
     time = context.get('TIME', [''])[0]  # e.g., "3pm"
     duration = context.get('DURATION', [''])[0]  # e.g., "30 mins"
     attendees = context.get('ATTENDEE', [])
+    
+    # Explicitly parse the date using datetime
+    try:
+        today = datetime.now()
+        date_lower = date.lower().strip()
+        
+        # Comprehensive date parsing
+        if date_lower == 'today':
+            parsed_date = today.strftime("%Y-%m-%d")
+        elif date_lower == 'tomorrow':
+            parsed_date = (today + timedelta(days=1)).strftime("%Y-%m-%d")
+        elif date_lower == 'day after tomorrow':
+            parsed_date = (today + timedelta(days=2)).strftime("%Y-%m-%d")
+        elif date_lower == 'yesterday':
+            parsed_date = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+        else:
+            # If it's already in a valid date format, validate it
+            try:
+                # Attempt to parse the date to validate it
+                datetime.strptime(date, "%Y-%m-%d")
+                parsed_date = date
+            except ValueError:
+                # If parsing fails, log a warning and use original
+                print(f"Warning: Could not validate date format: {date}")
+                parsed_date = date
+    
+    except Exception as e:
+        print(f"Error parsing date: {e}")
+        parsed_date = date  # fallback to original date string
     
     # Get duration in minutes
     import re
@@ -510,7 +538,7 @@ def prepare_meeting_data_from_context(context):
         duration_match = re.search(r'(\d+)', duration)
         if duration_match:
             num = int(duration_match.group(1))
-            if 'hour' in duration:
+            if 'hour' in duration.lower():
                 duration_minutes = num * 60
             else:
                 duration_minutes = num
@@ -518,11 +546,24 @@ def prepare_meeting_data_from_context(context):
     # Extract email addresses from attendees
     email_addresses = graph_client.extract_emails_from_attendees(attendees)
     
+    # Extract just the names from attendees (remove email)
+    attendee_names = []
+    for attendee in attendees:
+        # Check if attendee is in format "Name (email)"
+        name_match = re.match(r'^(.*?)\s*\(', attendee)
+        if name_match:
+            attendee_names.append(name_match.group(1))
+        else:
+            attendee_names.append(attendee)
+    
+    # Create subject with attendee names
+    subject = f"Meeting with {', '.join(attendee_names)}"
+    
     # Create basic meeting data
     meeting_data = {
-        'subject': f"Meeting on {date} at {time}",
+        'subject': subject,
         'body': f"Meeting scheduled via Scheduling Assistant\n\nDate: {date}\nTime: {time}\nDuration: {duration}\nAttendees: {', '.join(attendees)}",
-        'date': date,
+        'date': parsed_date,
         'time': time,
         'duration_minutes': duration_minutes,
         'attendees': email_addresses

@@ -235,8 +235,6 @@ class GraphClient:
         Returns:
             Dict: Created meeting information or error details
         """
-        print(f"Creating meeting: {meeting_data.get('subject', 'Untitled')}")
-        
         try:
             # Get token for user
             access_token = self.get_token_for_user(user_id)
@@ -264,63 +262,49 @@ class GraphClient:
                     "type": "required"
                 })
             
+            # Parse the date and time with robust error handling
             try:
-                # Format start/end times
-                start_time = None
-                end_time = None
+                # Get date and time from meeting data
+                date = meeting_data.get('date')
+                time = meeting_data.get('time', '9:00 AM')
                 
-                # Check if we have a valid time format
-                if 'time' in meeting_data and meeting_data['time']:
-                    try:
-                        # Try different time formats
-                        if ':' in meeting_data['time']:
-                            time_formats = ["%I:%M", "%H:%M", "%I:%M%p", "%H:%M%p"]
-                        else:
-                            time_formats = ["%I%p", "%H"]
-                            
-                        time_str = meeting_data['time'].upper().replace(" ", "")
-                        formatted_time = None
-                        
-                        for fmt in time_formats:
-                            try:
-                                parsed_time = datetime.strptime(time_str, fmt)
-                                formatted_time = parsed_time.strftime("%H:%M")
-                                break
-                            except ValueError:
-                                continue
-                                
-                        if formatted_time:
-                            start_time = f"{meeting_data['date']}T{formatted_time}"
-                            start_datetime = datetime.fromisoformat(start_time)
-                            duration_minutes = meeting_data.get('duration_minutes', 30)
-                            end_datetime = start_datetime + timedelta(minutes=duration_minutes)
-                            end_time = end_datetime.isoformat()
-                    except Exception as e:
-                        print(f"Error parsing time: {e}")
-                        # Use default times if parsing fails
-                        start_time = None
+                # Normalize time format
+                time = time.lower().strip()
                 
-                # If time parsing failed, use current time + 1 day
-                if not start_time or not end_time:
-                    now = datetime.now()
-                    tomorrow = now + timedelta(days=1)
-                    start_datetime = datetime(tomorrow.year, tomorrow.month, tomorrow.day, 9, 0)  # 9:00 AM
-                    start_time = start_datetime.isoformat()
-                    duration_minutes = meeting_data.get('duration_minutes', 30)
-                    end_datetime = start_datetime + timedelta(minutes=duration_minutes)
-                    end_time = end_datetime.isoformat()
-            except Exception as e:
-                print(f"Error setting up meeting times: {e}")
-                # Use default times if any error occurs
-                now = datetime.now()
-                tomorrow = now + timedelta(days=1)
-                start_datetime = datetime(tomorrow.year, tomorrow.month, tomorrow.day, 9, 0)  # 9:00 AM
-                start_time = start_datetime.isoformat()
-                duration_minutes = 30
+                # Parse time formats: "3pm", "3:00pm", "15:00"
+                if ":" not in time:
+                    # No colon, assume AM/PM format
+                    time_obj = datetime.strptime(time, "%I%p")
+                else:
+                    if "pm" in time or "am" in time:
+                        time_obj = datetime.strptime(time, "%I:%M%p")
+                    else:
+                        time_obj = datetime.strptime(time, "%H:%M")
+                
+                # Combine date and time
+                try:
+                    # Parse date string to datetime object
+                    date_obj = datetime.strptime(date, "%Y-%m-%d")
+                except ValueError:
+                    # Fallback to today if date parsing fails
+                    self.logger.warning(f"Could not parse date: {date}")
+                    date_obj = datetime.now()
+                
+                # Combine date and time
+                start_datetime = datetime.combine(date_obj.date(), time_obj.time())
+                
+                # Calculate end time based on duration
+                duration_minutes = meeting_data.get('duration_minutes', 30)
                 end_datetime = start_datetime + timedelta(minutes=duration_minutes)
-                end_time = end_datetime.isoformat()
+                
+            except Exception as time_parse_error:
+                self.logger.error(f"Time parsing error: {time_parse_error}")
+                # Fallback to default times
+                now = datetime.now()
+                start_datetime = datetime(now.year, now.month, now.day, 9, 0)  # 9:00 AM
+                end_datetime = start_datetime + timedelta(minutes=30)
             
-            # Format request body
+            # Prepare request body
             body = {
                 "subject": meeting_data.get('subject', 'Meeting'),
                 "body": {
@@ -328,11 +312,11 @@ class GraphClient:
                     "content": meeting_data.get('body', '')
                 },
                 "start": {
-                    "dateTime": start_time,
+                    "dateTime": start_datetime.isoformat(),
                     "timeZone": "India Standard Time"
                 },
                 "end": {
-                    "dateTime": end_time,
+                    "dateTime": end_datetime.isoformat(),
                     "timeZone": "India Standard Time"
                 },
                 "location": {
@@ -342,60 +326,32 @@ class GraphClient:
                 "isOnlineMeeting": False
             }
             
-            # Print the API request details
-            import json
-            print("\n------ MICROSOFT GRAPH API REQUEST ------")
-            print(f"Endpoint: https://graph.microsoft.com/v1.0/me/events")
-            print(f"Method: POST")
-            print(f"Headers: Authorization: Bearer [TOKEN HIDDEN]")
-            print(f"Request Body: {json.dumps(body, indent=2, default=str)}")
-            print("----------------------------------------\n")
+            # Make the API request
+            response = requests.post(
+                f"{self.base_url}/me/events",
+                headers=headers,
+                json=body
+            )
             
-            try:
-                response = requests.post(
-                    f"{self.base_url}/me/events",
-                    headers=headers,
-                    data=json.dumps(body),
-                    timeout=10  # Add timeout to prevent hanging requests
-                )
-                
-                # Print the API response details
-                print("\n------ MICROSOFT GRAPH API RESPONSE ------")
-                print(f"Status Code: {response.status_code}")
-                if response.text:
-                    try:
-                        print(f"Response: {json.dumps(response.json(), indent=2)}")
-                    except:
-                        print(f"Response (text): {response.text[:500]}")
-                print("----------------------------------------\n")
-                
-                if response.status_code in [200, 201]:
-                    created_meeting = response.json()
-                    print(f"Meeting created successfully: {created_meeting.get('id', 'Unknown ID')}")
-                    return created_meeting
-                else:
-                    print(f"Error creating meeting: {response.status_code} - {response.text}")
-                    return {
-                        "success": False,
-                        "error": f"API error {response.status_code}",
-                        "details": response.text
-                    }
-            except requests.exceptions.RequestException as req_err:
-                print(f"Request exception creating meeting: {req_err}")
+            # Check response
+            if response.status_code in [200, 201]:
+                created_meeting = response.json()
+                return created_meeting
+            else:
+                error_details = response.json().get('error', {})
                 return {
                     "success": False,
-                    "error": f"Request failed: {str(req_err)}"
+                    "error": error_details.get('code', 'Unknown error'),
+                    "message": error_details.get('message', 'Failed to create meeting')
                 }
         
         except Exception as e:
-            print(f"Exception creating meeting: {e}")
-            import traceback
-            print(traceback.format_exc())
+            self.logger.error(f"Exception creating meeting: {e}", exc_info=True)
             return {
                 "success": False,
                 "error": str(e)
             }
-                    
+                            
     def update_meeting(self, user_id: str, meeting_id: str, meeting_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Update an existing meeting/event
@@ -540,21 +496,26 @@ class GraphClient:
             Tuple[str, str]: Formatted start and end times in ISO format
         """
         try:
-            # Parse date
-            if "-" in date_str:
+            # Attempt to parse the date first
+            today = datetime.now()
+            date_lower = date_str.lower().strip()
+            
+            # Handle relative dates explicitly
+            if date_lower == 'today':
+                date_obj = today
+            elif date_lower == 'tomorrow':
+                date_obj = today + timedelta(days=1)
+            elif date_lower == 'day after tomorrow':
+                date_obj = today + timedelta(days=2)
+            elif date_lower == 'yesterday':
+                date_obj = today - timedelta(days=1)
+            elif "-" in date_str:
                 # Already in YYYY-MM-DD format
                 date_obj = datetime.strptime(date_str, "%Y-%m-%d")
             else:
-                # Try other common formats
-                date_formats = ["%m/%d/%Y", "%d/%m/%Y", "%B %d, %Y"]
-                for fmt in date_formats:
-                    try:
-                        date_obj = datetime.strptime(date_str, fmt)
-                        break
-                    except ValueError:
-                        continue
-                else:
-                    raise ValueError(f"Could not parse date: {date_str}")
+                # Log if we can't parse the date
+                self.logger.error(f"Could not parse date: {date_str}")
+                date_obj = today  # Fallback to today
             
             # Parse time
             time_str = time_str.lower().strip()
@@ -589,6 +550,8 @@ class GraphClient:
             start_time_iso = start_datetime.isoformat() + "Z"  # Add Z for UTC
             end_time_iso = end_datetime.isoformat() + "Z"
             
+            self.logger.info(f"Parsed dates: start={start_time_iso}, end={end_time_iso}")
+            
             return start_time_iso, end_time_iso
         
         except Exception as e:
@@ -597,8 +560,8 @@ class GraphClient:
             now = datetime.utcnow()
             start_time_iso = now.isoformat() + "Z"
             end_time_iso = (now + timedelta(hours=1)).isoformat() + "Z"
-            return start_time_iso, end_time_iso
-    
+            return start_time_iso, end_time_iso    
+        
     def extract_emails_from_attendees(self, attendees: List[str]) -> List[str]:
         """
         Extract email addresses from attendee strings
