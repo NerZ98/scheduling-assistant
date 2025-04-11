@@ -1,0 +1,39 @@
+{% extends 'base.html' %}
+
+{% block title %}Read-Only Mode{% endblock %}
+
+{% block content %}
+<div class="container mx-auto px-4 py-8">
+    <div class="max-w-lg mx-auto bg-white shadow-lg rounded-lg overflow-hidden">
+        <div class="bg-yellow-500 text-white px-6 py-4">
+            <h1 class="text-2xl font-bold">Read-Only Database</h1>
+        </div>
+        
+        <div class="p-6">
+            <div class="bg-yellow-50 border-l-4 border-yellow-500 p-4 mb-6">
+                <p class="text-yellow-700">
+                    {{ message }}
+                </p>
+            </div>
+            
+            <p class="text-gray-600 mb-4">
+                This application is connected to the OrangeHRM database in read-only mode. Contact information can only be
+                modified directly in the OrangeHRM system.
+            </p>
+            
+            <p class="text-gray-600 mb-6">
+                All employee records with email addresses are automatically available for scheduling in the assistant.
+            </p>
+            
+            <div class="flex justify-between">
+                <a href="{{ url_for('list_contacts') }}" class="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded">
+                    View Contacts
+                </a>
+                <a href="{{ url_for('index') }}" class="bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded">
+                    Back to Chat
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

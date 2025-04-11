@@ -9,7 +9,7 @@ from typing import Dict, List, Tuple, Any, Optional
 from database import ContactDatabase
 
 class Chatbot:
-    def __init__(self, extractor, db_path='contacts.db'):
+    def __init__(self, extractor, config=None):
         """
         Initialize the chatbot with entity extractor and context storage
         
@@ -21,7 +21,7 @@ class Chatbot:
         self.logger = logging.getLogger('Chatbot')
         
         # Initialize contact database
-        self.contact_db = ContactDatabase(db_path, self.logger)
+        self.contact_db = ContactDatabase(config, self.logger)
         
         # Dictionary to store conversation contexts
         # Format: {session_id: {entity_type: [values]}}

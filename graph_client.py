@@ -48,12 +48,21 @@ class GraphClient:
         self.token_cache = {}
         
         # Initialize MSAL application
-        # Using PublicClientApplication for browser-based flow
+        # Check if client secret is available and use ConfidentialClientApplication if so
         try:
-            self.app = msal.PublicClientApplication(
-                client_id=self.client_id,
-                authority=self.authority
-            )
+            if self.client_secret:
+                self.logger.info("Initializing MSAL ConfidentialClientApplication with client secret")
+                self.app = msal.ConfidentialClientApplication(
+                    client_id=self.client_id,
+                    client_credential=self.client_secret,
+                    authority=self.authority
+                )
+            else:
+                self.logger.info("Initializing MSAL PublicClientApplication")
+                self.app = msal.PublicClientApplication(
+                    client_id=self.client_id,
+                    authority=self.authority
+                )
             self.logger.info("MSAL application initialized successfully")
         except Exception as e:
             self.logger.error(f"Failed to initialize MSAL application: {e}", exc_info=True)
@@ -71,11 +80,24 @@ class GraphClient:
         # Generate a random state value for CSRF protection
         state = str(uuid.uuid4())
         
+        # Try to detect if Microsoft might use the /web/ path in the callback
+        # Based on the tenant configuration and authority
+        potential_redirect_uri = self.redirect_uri
+        if '/common' in self.authority and '/web/' not in potential_redirect_uri:
+            # For multi-tenant applications with common endpoint,
+            # Microsoft sometimes adds /web/ to the callback path
+            parts = potential_redirect_uri.split('/auth/')
+            if len(parts) == 2:
+                base = parts[0]
+                callback_part = parts[1]
+                potential_redirect_uri = f"{base}/auth/web/{callback_part}"
+                self.logger.info(f"Using adjusted redirect URI: {potential_redirect_uri}")
+        
         # Generate the authorization URL
         auth_url = self.app.get_authorization_request_url(
             scopes=self.scope,
             state=state,
-            redirect_uri=self.redirect_uri
+            redirect_uri=potential_redirect_uri
         )
         
         # This simple implementation doesn't need code_verifier, but we return a placeholder 
@@ -85,13 +107,14 @@ class GraphClient:
         self.logger.debug(f"Generated auth URL (truncated): {auth_url[:100]}...")
         return auth_url, state, code_verifier
     
-    def get_token_from_code(self, auth_code: str, code_verifier: str = None) -> Dict[str, Any]:
+    def get_token_from_code(self, auth_code: str, code_verifier: str = None, request_path: str = None) -> Dict[str, Any]:
         """
         Exchange authorization code for access token
         
         Args:
             auth_code: Authorization code from callback
             code_verifier: Optional PKCE code verifier
+            request_path: The current request path, used to determine the correct redirect URI
             
         Returns:
             Dict: Token information including access_token and refresh_token
@@ -99,10 +122,28 @@ class GraphClient:
         self.logger.info("Acquiring token from authorization code")
         
         try:
+            # Determine the correct redirect URI based on the request path
+            redirect_uri = self.redirect_uri
+            
+            if request_path and '/web/' in request_path and '/web/' not in redirect_uri:
+                # The request came from the /web/ path but our configured redirect URI doesn't have it
+                # Adjust the redirect URI to match
+                parts = redirect_uri.split('/auth/')
+                if len(parts) == 2:
+                    base = parts[0]
+                    callback_part = parts[1]
+                    redirect_uri = f"{base}/auth/web/{callback_part}"
+                    self.logger.info(f"Using adjusted redirect URI: {redirect_uri}")
+            
+            # For debugging, log more details about the token request
+            self.logger.debug(f"Token request details - client_id: {self.client_id}, redirect_uri: {redirect_uri}")
+            self.logger.debug(f"Token request scopes: {self.scope}")
+            self.logger.debug(f"Has client_secret: {bool(self.client_secret)}")
+            
             result = self.app.acquire_token_by_authorization_code(
                 code=auth_code,
                 scopes=self.scope,
-                redirect_uri=self.redirect_uri
+                redirect_uri=redirect_uri
             )
             
             if "error" in result:

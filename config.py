@@ -11,6 +11,11 @@ class Config:
     FLASK_APP = 'app.py'
     FLASK_ENV = os.environ.get('FLASK_ENV', 'development')
     
+    MYSQL_HOST = os.environ.get('MYSQL_HOST', 'localhost')
+    MYSQL_USER = os.environ.get('MYSQL_USER', 'root')
+    MYSQL_PASSWORD = os.environ.get('MYSQL_PASSWORD', '')
+    MYSQL_DATABASE = os.environ.get('MYSQL_DATABASE', 'orangehrm')
+    
     # Session settings
     SESSION_TYPE = 'filesystem'
     SESSION_PERMANENT = False

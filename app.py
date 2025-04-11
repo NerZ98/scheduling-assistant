@@ -6,6 +6,8 @@ import uuid
 import logging
 import secrets
 from flask_session import Session
+import traceback
+from flask import flash
 
 # Create Flask app first
 app = Flask(__name__)
@@ -38,17 +40,32 @@ import json
 def parse_arguments():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description="Scheduling Assistant Chatbot")
-    parser.add_argument('--seed-db', action='store_true', help="Seed the database with sample data")
     return parser.parse_args()
 
-def initialize_database(seed=False):
-    """Initialize the database and optionally seed it with sample data"""
-    db = ContactDatabase()
-    if seed:
-        print("Seeding database with sample contacts...")
-        db.seed_sample_data()
-        print("Database seeded successfully!")
-    return db
+def initialize_database(config):
+    """Initialize the database connection to OrangeHRM"""
+    try:
+        # Set up logging
+        logger = logging.getLogger('Database')
+        logger.setLevel(logging.INFO)
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter('%(name)s - %(levelname)s: %(message)s')
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+        
+        # Log the database connection attempt
+        logger.info(f"Connecting to MySQL database at {config.MYSQL_HOST}/{config.MYSQL_DATABASE}")
+        
+        # Initialize the database with config
+        db = ContactDatabase(config, logger)
+        logger.info("Database connection established successfully")
+        return db
+    except Exception as e:
+        # Log the error
+        logger.error(f"Error connecting to database: {e}", exc_info=True)
+        # Return a stub database if connection fails
+        logger.warning("Falling back to stub database - contacts functionality may be limited")
+        return ContactDatabase(config, logger)
 
 # Initialize app with config
 config = get_config()
@@ -60,11 +77,56 @@ if not os.path.exists(config.LOG_DIR):
 
 # Initialize the entity extractor and chatbot
 extractor = AdvancedEntityExtractor()
-chatbot = Chatbot(extractor)
+chatbot = Chatbot(extractor, config)
 
 # Initialize Microsoft Graph client and meeting database
 graph_client = GraphClient(config)
 meeting_db = MeetingDatabase()
+
+# Setup app logger
+app.logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+handler.setLevel(logging.INFO)
+formatter = logging.Formatter('%(name)s - %(levelname)s: %(message)s')
+handler.setFormatter(formatter)
+app.logger.addHandler(handler)
+
+try:
+    # Initialize the entity extractor
+    extractor = AdvancedEntityExtractor()
+    
+    # Initialize database connection
+    app.logger.info("Initializing database connection to OrangeHRM")
+    contact_db = initialize_database(config)
+    
+    # Initialize chatbot with extractor and database
+    chatbot = Chatbot(extractor, config)
+    
+    # Initialize Microsoft Graph client and meeting database
+    graph_client = GraphClient(config)
+    meeting_db = MeetingDatabase()
+    
+    app.logger.info("Application initialized successfully")
+    
+except Exception as e:
+    # Log the error
+    app.logger.error(f"Error during application initialization: {e}")
+    app.logger.error(traceback.format_exc())
+    
+    # This will be shown on the first page load
+    app.config['INIT_ERROR'] = str(e)
+    
+    # If this is a critical error, we might want to exit
+    # sys.exit(1)  # Uncomment to exit on critical error
+
+# Add a route to handle database errors
+@app.route('/database-error')
+def database_error():
+    """Display database connection error"""
+    error = app.config.get('INIT_ERROR', 'Unknown database error')
+    return render_template('error.html', 
+                          message=f"Database connection error: {error}",
+                          details="The application could not connect to the OrangeHRM database. Please check your configuration and try again.")
 
 @app.route('/')
 def index():
@@ -221,61 +283,20 @@ def list_contacts():
 
 @app.route('/contacts/add', methods=['GET', 'POST'])
 def add_contact():
-    """Add a new contact to the database"""
-    if request.method == 'POST':
-        first_name = request.form.get('first_name', '').strip()
-        last_name = request.form.get('last_name', '').strip()
-        email = request.form.get('email', '').strip()
-        
-        if first_name and last_name and email:
-            success = chatbot.contact_db.add_contact(first_name, last_name, email)
-            
-            if success:
-                return redirect(url_for('list_contacts'))
-            else:
-                return render_template('add_contact.html', error="Failed to add contact. Email may already exist.")
-        else:
-            return render_template('add_contact.html', error="All fields are required.")
-    
-    return render_template('add_contact.html')
+    """Display read-only notice for adding contacts"""
+    return render_template('read_only_notice.html', 
+                          message="Adding contacts is not supported when connected to OrangeHRM database.")
 
 @app.route('/contacts/delete/<int:contact_id>', methods=['POST'])
 def delete_contact(contact_id):
-    """Delete a contact from the database"""
-    chatbot.contact_db.delete_contact(contact_id)
+    """Display read-only notice for deleting contacts"""
     return redirect(url_for('list_contacts'))
 
 @app.route('/contacts/edit/<int:contact_id>', methods=['GET', 'POST'])
 def edit_contact(contact_id):
-    """Edit a contact in the database"""
-    # Find the contact
-    contacts = chatbot.contact_db.get_all_contacts()
-    contact = next((c for c in contacts if c['id'] == contact_id), None)
-    
-    if not contact:
-        return redirect(url_for('list_contacts'))
-    
-    if request.method == 'POST':
-        first_name = request.form.get('first_name', '').strip()
-        last_name = request.form.get('last_name', '').strip()
-        email = request.form.get('email', '').strip()
-        
-        if first_name and last_name and email:
-            success = chatbot.contact_db.update_contact(
-                contact_id,
-                first_name=first_name,
-                last_name=last_name,
-                email=email
-            )
-            
-            if success:
-                return redirect(url_for('list_contacts'))
-            else:
-                return render_template('edit_contact.html', contact=contact, error="Failed to update contact.")
-        else:
-            return render_template('edit_contact.html', contact=contact, error="All fields are required.")
-    
-    return render_template('edit_contact.html', contact=contact)
+    """Display read-only notice for editing contacts"""
+    return render_template('read_only_notice.html',
+                          message="Editing contacts is not supported when connected to OrangeHRM database.")
 
 # Microsoft Graph authentication routes
 @app.route('/auth/connect')
@@ -297,6 +318,11 @@ def connect_microsoft():
         app.logger.error(f"Error generating auth URL: {e}", exc_info=True)
         return render_template('error.html', message="An error occurred during authentication setup. Please try again.")
 
+@app.route('/auth/web/callback')
+def auth_web_callback():
+    """Handle Microsoft auth callback with /web/ path"""
+    # This is a convenience route that redirects to the main callback route
+    return auth_callback()
 
 @app.route('/auth/callback')
 def auth_callback():
@@ -317,7 +343,8 @@ def auth_callback():
 
     try:
         # Exchange code for tokens
-        token_info = graph_client.get_token_from_code(code)
+        # Pass the current request path to ensure the correct redirect URI is used
+        token_info = graph_client.get_token_from_code(code, request_path=request.path)
 
         if not token_info.get('success'):
             app.logger.error(f"Failed to get access token: {token_info.get('error')}")
@@ -347,7 +374,6 @@ def auth_callback():
     except Exception as e:
         app.logger.error(f"Exception during authentication: {e}", exc_info=True)
         return render_template('error.html', message="An unexpected error occurred during authentication. Please try again.")
-
 
 @app.route('/auth/disconnect')
 def disconnect_microsoft():
@@ -573,9 +599,4 @@ def prepare_meeting_data_from_context(context):
 
 if __name__ == '__main__':
     args = parse_arguments()
-    
-    # Initialize and seed database if requested
-    if args.seed_db:
-        initialize_database(seed=True)
-    
     app.run(debug=True)

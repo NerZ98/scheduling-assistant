@@ -1,23 +1,20 @@
-import os
-import sqlite3
 import logging
 from typing import List, Dict, Tuple, Optional, Any
-from pathlib import Path
+import mysql.connector
+from mysql.connector import pooling
 
 class ContactDatabase:
     """
-    Database handler for storing and retrieving contact information
+    Database handler for retrieving contact information from OrangeHRM MySQL database
     """
-    def __init__(self, db_path='contacts.db', logger=None):
+    def __init__(self, config=None, logger=None):
         """
-        Initialize the contact database
+        Initialize the contact database connection to OrangeHRM
         
         Args:
-            db_path (str): Path to the SQLite database file
+            config: Application configuration containing MySQL settings
             logger (logging.Logger, optional): Logger instance
         """
-        self.db_path = db_path
-        
         # Setup logging
         if logger:
             self.logger = logger
@@ -29,45 +26,47 @@ class ContactDatabase:
                 formatter = logging.Formatter('%(name)s - %(levelname)s: %(message)s')
                 handler.setFormatter(formatter)
                 self.logger.addHandler(handler)
-        
-        # Initialize database
-        self._init_db()
-    
-    def _init_db(self):
-        """Initialize the database and create tables if they don't exist"""
-        try:
-            self.logger.info(f"Initializing database at {self.db_path}")
-            # Ensure the directory exists
-            db_dir = os.path.dirname(self.db_path)
-            if db_dir and not os.path.exists(db_dir):
-                os.makedirs(db_dir)
                 
-            # Create connection and table
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Create contacts table if it doesn't exist
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS contacts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                first_name TEXT NOT NULL,
-                last_name TEXT NOT NULL,
-                email TEXT NOT NULL UNIQUE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            ''')
-            
-            conn.commit()
-            conn.close()
-            self.logger.info("Database initialized successfully")
+        # Store config
+        self.config = config
         
+        # Initialize connection pool
+        self._init_connection_pool()
+    
+    def _init_connection_pool(self):
+        """Initialize a MySQL connection pool"""
+        try:
+            self.logger.info("Initializing MySQL connection pool")
+            
+            # Get MySQL connection parameters from config
+            db_config = {
+                'host': self.config.MYSQL_HOST,
+                'user': self.config.MYSQL_USER,
+                'password': self.config.MYSQL_PASSWORD,
+                'database': self.config.MYSQL_DATABASE,
+                'pool_name': 'orangehrm_pool',
+                'pool_size': 5
+            }
+            
+            # Initialize the connection pool
+            self.connection_pool = mysql.connector.pooling.MySQLConnectionPool(**db_config)
+            self.logger.info("MySQL connection pool initialized successfully")
+            
         except Exception as e:
-            self.logger.error(f"Error initializing database: {e}", exc_info=True)
+            self.logger.error(f"Error initializing MySQL connection pool: {e}", exc_info=True)
+            raise
+    
+    def _get_connection(self):
+        """Get a connection from the pool"""
+        try:
+            return self.connection_pool.get_connection()
+        except Exception as e:
+            self.logger.error(f"Error getting connection from pool: {e}", exc_info=True)
             raise
     
     def add_contact(self, first_name: str, last_name: str, email: str) -> bool:
         """
-        Add a new contact to the database
+        This method is disabled as we are in read-only mode for OrangeHRM database
         
         Args:
             first_name (str): First name
@@ -75,37 +74,14 @@ class ContactDatabase:
             email (str): Email address
             
         Returns:
-            bool: True if successful, False otherwise
+            bool: Always False, indicating operation not supported
         """
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Check if email already exists
-            cursor.execute("SELECT email FROM contacts WHERE email = ?", (email,))
-            if cursor.fetchone():
-                self.logger.warning(f"Contact with email {email} already exists")
-                conn.close()
-                return False
-            
-            # Insert new contact
-            cursor.execute(
-                "INSERT INTO contacts (first_name, last_name, email) VALUES (?, ?, ?)",
-                (first_name, last_name, email)
-            )
-            
-            conn.commit()
-            conn.close()
-            self.logger.info(f"Added contact: {first_name} {last_name} ({email})")
-            return True
-        
-        except Exception as e:
-            self.logger.error(f"Error adding contact: {e}", exc_info=True)
-            return False
+        self.logger.warning("add_contact operation not supported in read-only mode")
+        return False
     
     def find_contacts_by_name(self, name: str) -> List[Dict[str, Any]]:
         """
-        Find contacts by name (first or last) with improved name part handling
+        Find contacts in OrangeHRM database by name (first or last)
         
         Args:
             name (str): Name to search for
@@ -114,9 +90,8 @@ class ContactDatabase:
             List[Dict]: List of matching contacts
         """
         try:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row  # Return rows as dictionaries
-            cursor = conn.cursor()
+            conn = self._get_connection()
+            cursor = conn.cursor(dictionary=True)
             
             # Convert name to lowercase for case-insensitive comparison
             name = name.strip().lower()
@@ -135,21 +110,33 @@ class ContactDatabase:
                 self.logger.debug(f"Searching for first_name={first_name}, last_name={last_name}")
                 
                 # Try with exact first and last name
-                cursor.execute("""
-                    SELECT * FROM contacts 
-                    WHERE (LOWER(first_name) = ? AND LOWER(last_name) = ?)
-                """, (first_name, last_name))
+                query = """
+                    SELECT 
+                        employee_id as id,
+                        emp_firstname as first_name, 
+                        emp_lastname as last_name, 
+                        emp_work_email as email 
+                    FROM hs_hr_employee 
+                    WHERE (LOWER(emp_firstname) = %s AND LOWER(emp_lastname) = %s)
+                """
+                cursor.execute(query, (first_name, last_name))
                 
-                results = [dict(row) for row in cursor.fetchall()]
+                results = cursor.fetchall()
                 
                 # If no exact match, try with LIKE
                 if not results:
-                    cursor.execute("""
-                        SELECT * FROM contacts 
-                        WHERE (LOWER(first_name) LIKE ? AND LOWER(last_name) LIKE ?)
-                    """, (f"{first_name}%", f"{last_name}%"))
+                    query = """
+                        SELECT 
+                            employee_id as id,
+                            emp_firstname as first_name, 
+                            emp_lastname as last_name, 
+                            emp_work_email as email 
+                        FROM hs_hr_employee 
+                        WHERE (LOWER(emp_firstname) LIKE %s AND LOWER(emp_lastname) LIKE %s)
+                    """
+                    cursor.execute(query, (f"{first_name}%", f"{last_name}%"))
                     
-                    results = [dict(row) for row in cursor.fetchall()]
+                    results = cursor.fetchall()
             
             # If no results yet, try individual name parts
             if not results:
@@ -161,12 +148,18 @@ class ContactDatabase:
                     search_term = f"{part}%"
                     
                     # Search in both first_name and last_name
-                    cursor.execute("""
-                        SELECT * FROM contacts 
-                        WHERE LOWER(first_name) LIKE ? OR LOWER(last_name) LIKE ?
-                    """, (search_term, search_term))
+                    query = """
+                        SELECT 
+                            employee_id as id,
+                            emp_firstname as first_name, 
+                            emp_lastname as last_name, 
+                            emp_work_email as email 
+                        FROM hs_hr_employee 
+                        WHERE LOWER(emp_firstname) LIKE %s OR LOWER(emp_lastname) LIKE %s
+                    """
+                    cursor.execute(query, (search_term, search_term))
                     
-                    part_results = [dict(row) for row in cursor.fetchall()]
+                    part_results = cursor.fetchall()
                     if part_results:
                         # Add unique results to the main results list
                         for contact in part_results:
@@ -177,18 +170,28 @@ class ContactDatabase:
             if not results:
                 # Use a more permissive LIKE pattern
                 search_term = f"%{name}%"
-                cursor.execute("""
-                    SELECT * FROM contacts 
-                    WHERE LOWER(first_name || ' ' || last_name) LIKE ?
-                    OR LOWER(last_name || ' ' || first_name) LIKE ?
-                """, (search_term, search_term))
+                query = """
+                    SELECT 
+                        employee_id as id,
+                        emp_firstname as first_name, 
+                        emp_lastname as last_name, 
+                        emp_work_email as email 
+                    FROM hs_hr_employee 
+                    WHERE LOWER(CONCAT(emp_firstname, ' ', emp_lastname)) LIKE %s
+                    OR LOWER(CONCAT(emp_lastname, ' ', emp_firstname)) LIKE %s
+                """
+                cursor.execute(query, (search_term, search_term))
                 
-                results = [dict(row) for row in cursor.fetchall()]
+                results = cursor.fetchall()
             
+            cursor.close()
             conn.close()
             
-            self.logger.info(f"Found {len(results)} contacts matching '{name}'")
-            return results
+            # Filter out results without email addresses
+            filtered_results = [r for r in results if r.get('email')]
+            
+            self.logger.info(f"Found {len(filtered_results)} contacts matching '{name}'")
+            return filtered_results
         
         except Exception as e:
             self.logger.error(f"Error finding contacts: {e}", exc_info=True)
@@ -205,18 +208,27 @@ class ContactDatabase:
             Dict or None: Contact information if found
         """
         try:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
+            conn = self._get_connection()
+            cursor = conn.cursor(dictionary=True)
             
-            cursor.execute("SELECT * FROM contacts WHERE email = ?", (email,))
+            query = """
+                SELECT 
+                    employee_id as id,
+                    emp_firstname as first_name, 
+                    emp_lastname as last_name, 
+                    emp_work_email as email 
+                FROM hs_hr_employee 
+                WHERE emp_work_email = %s
+            """
+            cursor.execute(query, (email,))
             result = cursor.fetchone()
             
+            cursor.close()
             conn.close()
             
             if result:
                 self.logger.info(f"Found contact with email {email}")
-                return dict(result)
+                return result
             else:
                 self.logger.info(f"No contact found with email {email}")
                 return None
@@ -227,19 +239,29 @@ class ContactDatabase:
     
     def get_all_contacts(self) -> List[Dict[str, Any]]:
         """
-        Get all contacts from the database
+        Get all contacts from the database who have email addresses
         
         Returns:
             List[Dict]: List of all contacts
         """
         try:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
+            conn = self._get_connection()
+            cursor = conn.cursor(dictionary=True)
             
-            cursor.execute("SELECT * FROM contacts ORDER BY last_name, first_name")
-            results = [dict(row) for row in cursor.fetchall()]
+            query = """
+                SELECT 
+                    employee_id as id,
+                    emp_firstname as first_name, 
+                    emp_lastname as last_name, 
+                    emp_work_email as email 
+                FROM hs_hr_employee 
+                WHERE emp_work_email IS NOT NULL AND emp_work_email != ''
+                ORDER BY emp_lastname, emp_firstname
+            """
+            cursor.execute(query)
+            results = cursor.fetchall()
             
+            cursor.close()
             conn.close()
             
             self.logger.info(f"Retrieved {len(results)} contacts")
@@ -251,129 +273,37 @@ class ContactDatabase:
     
     def update_contact(self, contact_id: int, **kwargs) -> bool:
         """
-        Update a contact's information
+        This method is disabled as we are in read-only mode for OrangeHRM database
         
         Args:
             contact_id (int): Contact ID
             **kwargs: Fields to update (first_name, last_name, email)
             
         Returns:
-            bool: True if successful, False otherwise
+            bool: Always False, indicating operation not supported
         """
-        try:
-            allowed_fields = {'first_name', 'last_name', 'email'}
-            update_fields = {k: v for k, v in kwargs.items() if k in allowed_fields}
-            
-            if not update_fields:
-                self.logger.warning("No valid fields provided for update")
-                return False
-            
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Build the SQL query
-            set_clause = ", ".join(f"{field} = ?" for field in update_fields)
-            values = list(update_fields.values())
-            values.append(contact_id)
-            
-            cursor.execute(
-                f"UPDATE contacts SET {set_clause} WHERE id = ?",
-                values
-            )
-            
-            if cursor.rowcount == 0:
-                self.logger.warning(f"No contact found with ID {contact_id}")
-                conn.close()
-                return False
-            
-            conn.commit()
-            conn.close()
-            
-            self.logger.info(f"Updated contact ID {contact_id}")
-            return True
-        
-        except Exception as e:
-            self.logger.error(f"Error updating contact: {e}", exc_info=True)
-            return False
+        self.logger.warning("update_contact operation not supported in read-only mode")
+        return False
     
     def delete_contact(self, contact_id: int) -> bool:
         """
-        Delete a contact from the database
+        This method is disabled as we are in read-only mode for OrangeHRM database
         
         Args:
             contact_id (int): Contact ID
             
         Returns:
-            bool: True if successful, False otherwise
+            bool: Always False, indicating operation not supported
         """
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute("DELETE FROM contacts WHERE id = ?", (contact_id,))
-            
-            if cursor.rowcount == 0:
-                self.logger.warning(f"No contact found with ID {contact_id}")
-                conn.close()
-                return False
-            
-            conn.commit()
-            conn.close()
-            
-            self.logger.info(f"Deleted contact ID {contact_id}")
-            return True
-        
-        except Exception as e:
-            self.logger.error(f"Error deleting contact: {e}", exc_info=True)
-            return False
+        self.logger.warning("delete_contact operation not supported in read-only mode")
+        return False
     
     def seed_sample_data(self) -> bool:
         """
-        Seed the database with sample data for testing
+        This method is disabled as we are in read-only mode for OrangeHRM database
         
         Returns:
-            bool: True if successful, False otherwise
+            bool: Always False, indicating operation not supported
         """
-        try:
-            # Sample data with some duplicate names
-            sample_contacts = [
-                ("John", "Smith", "john.smith@example.com"),
-                ("Jane", "Doe", "jane.doe@example.com"),
-                ("Michael", "Johnson", "michael.johnson@example.com"),
-                ("Emily", "Davis", "emily.davis@example.com"),
-                ("John", "Smith", "john.smith2@example.com"),  # Duplicate name
-                ("Sarah", "Wilson", "sarah.wilson@example.com"),
-                ("David", "Brown", "david.brown@example.com"),
-                ("Jennifer", "Miller", "jennifer.miller@example.com"),
-                ("Robert", "Jones", "robert.jones@example.com"),
-                ("Jessica", "Garcia", "jessica.garcia@example.com"),
-                ("Rutuj", "Desai", "rutuj.desai@example.com"),
-                ("Rutuj", "Desai", "rutuj.desai2@example.com"),  # Duplicate name
-                ("John", "Doe", "john.doe@example.com"),
-                ("Mary", "Johnson", "mary.johnson@example.com")
-            ]
-            
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Add sample contacts
-            for first_name, last_name, email in sample_contacts:
-                # Skip if email already exists
-                cursor.execute("SELECT email FROM contacts WHERE email = ?", (email,))
-                if cursor.fetchone():
-                    continue
-                
-                cursor.execute(
-                    "INSERT INTO contacts (first_name, last_name, email) VALUES (?, ?, ?)",
-                    (first_name, last_name, email)
-                )
-            
-            conn.commit()
-            conn.close()
-            
-            self.logger.info(f"Seeded database with {len(sample_contacts)} sample contacts")
-            return True
-        
-        except Exception as e:
-            self.logger.error(f"Error seeding sample data: {e}", exc_info=True)
-            return False
+        self.logger.warning("seed_sample_data operation not supported in read-only mode")
+        return False
